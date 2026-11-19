@@ -223,6 +223,21 @@
             stewards: []
         };
 
+        const INITIAL_WHATSAPP_NUMBERS = {
+            classVisits: '050-8655616',
+            independentVisitors: '050-8808920',
+            stewards: '050-8655616'
+        };
+
+        const HEBREW_WEEKDAYS = ['יום א׳', 'יום ב׳', 'יום ג׳', 'יום ד׳', 'יום ה׳', 'יום ו׳', 'שבת'];
+
+        function buildWhatsAppLink(phoneInput) {
+            const digits = String(phoneInput || '').replace(/\D/g, '');
+            if (!digits) return 'https://wa.me/';
+            const normalized = digits.startsWith('0') ? `972${digits.slice(1)}` : digits;
+            return `https://wa.me/${normalized}`;
+        }
+
         function getTodayIsoString() {
             const now = new Date();
             const y = now.getFullYear();
@@ -283,6 +298,12 @@
                 return `${d}/${m}`;
             }
             return trimmed;
+        }
+
+        function getShortageDayName(dateStr) {
+            const parsed = parseShortageDate(dateStr);
+            if (!parsed) return '';
+            return HEBREW_WEEKDAYS[parsed.getDay()] || '';
         }
 
         function getActiveSortedDates(datesArray) {
@@ -532,6 +553,14 @@
                 return INITIAL_SHORTAGES;
             });
 
+            const [whatsappNumbers, setWhatsappNumbers] = useState(() => {
+                const saved = localStorage.getItem('garden_whatsapp_numbers');
+                if (saved) return { ...INITIAL_WHATSAPP_NUMBERS, ...JSON.parse(saved) };
+                return INITIAL_WHATSAPP_NUMBERS;
+            });
+            const [isEditingWhatsapp, setIsEditingWhatsapp] = useState(false);
+            const [whatsappDraft, setWhatsappDraft] = useState(INITIAL_WHATSAPP_NUMBERS);
+
             const [isCloudConnected, setIsCloudConnected] = useState(false);
             const [isAdmin, setIsAdmin] = useState(false);
             const [darkMode, setDarkMode] = useState(() => {
@@ -572,6 +601,11 @@
             const [addingShortageType, setAddingShortageType] = useState(null);
             const [newShortageDate, setNewShortageDate] = useState('');
 
+            const contentTextareaRef = useRef(null);
+            const [showLinkBuilder, setShowLinkBuilder] = useState(false);
+            const [linkTextInput, setLinkTextInput] = useState('');
+            const [linkUrlInput, setLinkUrlInput] = useState('');
+
             const [formData, setFormData] = useState({
                 title: '',
                 content: '',
@@ -609,6 +643,7 @@
             useEffect(() => {
                 let unsubNotices = null;
                 let unsubShortages = null;
+                let unsubWhatsapp = null;
 
                 const initFirebase = async () => {
                     if (!window.firebaseDb || !window.firebaseAuthReady) return;
@@ -640,6 +675,15 @@
                         }, (err) => {
                             console.warn("Firestore shortages snapshot error:", err);
                         });
+
+                        const whatsappDocRef = doc(db, 'clore_settings', 'whatsapp_numbers');
+                        unsubWhatsapp = onSnapshot(whatsappDocRef, (docSnap) => {
+                            if (docSnap.exists()) {
+                                setWhatsappNumbers(prev => ({ ...prev, ...docSnap.data() }));
+                            }
+                        }, (err) => {
+                            console.warn("Firestore whatsapp snapshot error:", err);
+                        });
                     } catch (err) {
                         console.error("Firebase Auth / Sync Error:", err);
                     }
@@ -650,6 +694,7 @@
                 return () => {
                     if (unsubNotices) unsubNotices();
                     if (unsubShortages) unsubShortages();
+                    if (unsubWhatsapp) unsubWhatsapp();
                 };
             }, []);
 
@@ -660,6 +705,10 @@
             useEffect(() => {
                 localStorage.setItem('garden_shift_shortages', JSON.stringify(shiftShortages));
             }, [shiftShortages]);
+
+            useEffect(() => {
+                localStorage.setItem('garden_whatsapp_numbers', JSON.stringify(whatsappNumbers));
+            }, [whatsappNumbers]);
 
             // Auto-clean passed shortage dates on load, change, and periodically
             useEffect(() => {
@@ -788,6 +837,17 @@
                 }
             };
 
+            const syncWhatsappToCloud = async (updatedNumbers) => {
+                if (!window.firebaseDb) return;
+                try {
+                    const { doc, setDoc } = window.firestoreTools;
+                    const whatsappDocRef = doc(window.firebaseDb, 'clore_settings', 'whatsapp_numbers');
+                    await setDoc(whatsappDocRef, updatedNumbers);
+                } catch (e) {
+                    console.error("Cloud save whatsapp error:", e);
+                }
+            };
+
             useEffect(() => {
                 const timer = setInterval(() => {
                     const now = new Date();
@@ -829,8 +889,27 @@
             }, [activeNotices]);
 
             const tvNotices = useMemo(() => {
+                const weekAgo = new Date();
+                weekAgo.setDate(weekAgo.getDate() - 7);
+                weekAgo.setHours(0, 0, 0, 0);
+
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+
                 return activeNotices
-                    .filter(n => n.showOnTv !== false)
+                    .filter(n => {
+                        if (n.showOnTv === false) return false;
+                        if (n.pinned) {
+                            if (n.expiresAt) {
+                                const exp = new Date(n.expiresAt);
+                                exp.setHours(0, 0, 0, 0);
+                                if (exp < today) return false;
+                            }
+                            return true;
+                        }
+                        const d = new Date(n.createdAt);
+                        return d >= weekAgo;
+                    })
                     .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
             }, [activeNotices]);
 
@@ -890,7 +969,111 @@
                         imageUrl: ''
                     });
                 }
+                setShowLinkBuilder(false);
+                setLinkTextInput('');
+                setLinkUrlInput('');
                 setShowFormModal(true);
+            };
+
+            const applyBoldFormat = () => {
+                const el = contentTextareaRef.current;
+                const currentText = formData.content || '';
+                if (!el) {
+                    setFormData(prev => ({ ...prev, content: `${currentText}**טקסט מודגש**` }));
+                    return;
+                }
+                const start = el.selectionStart ?? currentText.length;
+                const end = el.selectionEnd ?? currentText.length;
+                const selected = currentText.slice(start, end);
+                const replacement = selected ? `**${selected}**` : '**טקסט מודגש**';
+                const nextContent = currentText.slice(0, start) + replacement + currentText.slice(end);
+                setFormData(prev => ({ ...prev, content: nextContent }));
+                setTimeout(() => {
+                    el.focus();
+                    if (selected) {
+                        el.setSelectionRange(start + replacement.length, start + replacement.length);
+                    } else {
+                        el.setSelectionRange(start + 2, start + 12);
+                    }
+                }, 0);
+            };
+
+            const handleOpenLinkBuilder = () => {
+                if (showLinkBuilder) {
+                    setShowLinkBuilder(false);
+                    return;
+                }
+                const el = contentTextareaRef.current;
+                const currentText = formData.content || '';
+                const start = el ? (el.selectionStart ?? 0) : 0;
+                const end = el ? (el.selectionEnd ?? 0) : 0;
+                const selected = currentText.slice(start, end).trim();
+                setLinkTextInput(selected);
+                setLinkUrlInput('');
+                setShowLinkBuilder(true);
+            };
+
+            const handleInsertLink = () => {
+                const cleanUrl = linkUrlInput.trim();
+                if (!cleanUrl) return;
+                const formattedUrl = /^https?:\/\//i.test(cleanUrl) ? cleanUrl : `https://${cleanUrl}`;
+                const displayLabel = linkTextInput.trim() || 'לחצו כאן';
+                const markdownLink = `[${displayLabel}](${formattedUrl})`;
+
+                const el = contentTextareaRef.current;
+                const currentText = formData.content || '';
+                const start = el ? (el.selectionStart ?? currentText.length) : currentText.length;
+                const end = el ? (el.selectionEnd ?? currentText.length) : currentText.length;
+                const nextContent = currentText.slice(0, start) + markdownLink + currentText.slice(end);
+                setFormData(prev => ({ ...prev, content: nextContent }));
+                setShowLinkBuilder(false);
+                setLinkTextInput('');
+                setLinkUrlInput('');
+                setTimeout(() => {
+                    if (el) {
+                        el.focus();
+                        const newCursor = start + markdownLink.length;
+                        el.setSelectionRange(newCursor, newCursor);
+                    }
+                }, 0);
+            };
+
+            const applyBulletListFormat = () => {
+                const el = contentTextareaRef.current;
+                const currentText = formData.content || '';
+                if (!el) {
+                    const prefix = currentText && !currentText.endsWith('\n') ? '\n- ' : '- ';
+                    setFormData(prev => ({ ...prev, content: `${currentText}${prefix}` }));
+                    return;
+                }
+                const start = el.selectionStart ?? currentText.length;
+                const end = el.selectionEnd ?? currentText.length;
+
+                if (start !== end) {
+                    const selected = currentText.slice(start, end);
+                    const bulleted = selected
+                        .split('\n')
+                        .map(line => (line.trim() && !line.trim().startsWith('- ') && !line.trim().startsWith('* ') ? `- ${line}` : line))
+                        .join('\n');
+                    const nextContent = currentText.slice(0, start) + bulleted + currentText.slice(end);
+                    setFormData(prev => ({ ...prev, content: nextContent }));
+                    setTimeout(() => {
+                        el.focus();
+                        el.setSelectionRange(start + bulleted.length, start + bulleted.length);
+                    }, 0);
+                    return;
+                }
+
+                const lineStart = currentText.lastIndexOf('\n', start - 1) + 1;
+                const currentLinePrefix = currentText.slice(lineStart, start);
+                const insertion = currentLinePrefix.trim() === '' ? '- ' : '\n- ';
+                const nextContent = currentText.slice(0, start) + insertion + currentText.slice(end);
+                setFormData(prev => ({ ...prev, content: nextContent }));
+                setTimeout(() => {
+                    el.focus();
+                    const newCursor = start + insertion.length;
+                    el.setSelectionRange(newCursor, newCursor);
+                }, 0);
             };
 
             const handleSaveNotice = (e) => {
@@ -984,35 +1167,24 @@
                 syncShortagesToCloud(updated);
             };
 
-            const getWhatsAppFormattedText = () => {
-                let text = `📢 *עדכוני גן המדע - סיכום שבועי*\n(${weeklySummaryData.startDateStr} - ${weeklySummaryData.endDateStr})\n\n`;
+            const handleClearShortageDates = (type) => {
+                const updated = {
+                    ...shiftShortages,
+                    [type]: []
+                };
+                setShiftShortages(updated);
+                syncShortagesToCloud(updated);
+            };
 
-                if (weeklySummaryData.notices.length === 0) {
-                    text += `אין מודעות חדשות השבוע.\n`;
-                } else {
-                    weeklySummaryData.notices.forEach((n, idx) => {
-                        text += `*${idx + 1}. ${n.title}* [${n.category}]\n${n.content?.trim() ? `${n.content}\n\n` : '\n'}`;
-                    });
-                }
-
-                const classVisits = getActiveSortedDates(shiftShortages.classVisits).map(formatShortageDateDisplay);
-                const independentVisitors = getActiveSortedDates(shiftShortages.independentVisitors).map(formatShortageDateDisplay);
-                const stewards = getActiveSortedDates(shiftShortages.stewards).map(formatShortageDateDisplay);
-
-                if (classVisits.length > 0 || independentVisitors.length > 0 || stewards.length > 0) {
-                    text += `📌 *חוסרים בשיבוצים:*\n`;
-                    if (classVisits.length > 0) {
-                        text += `🏫 ביקורי כיתות: ${classVisits.join(', ')}\n`;
-                    }
-                    if (independentVisitors.length > 0) {
-                        text += `🎟️ מבקר עצמאי: ${independentVisitors.join(', ')}\n`;
-                    }
-                    if (stewards.length > 0) {
-                        text += `👔 דיילים: ${stewards.join(', ')}\n`;
-                    }
-                }
-
-                return text;
+            const handleSaveWhatsappNumbers = () => {
+                const cleaned = {
+                    classVisits: whatsappDraft.classVisits.trim() || INITIAL_WHATSAPP_NUMBERS.classVisits,
+                    independentVisitors: whatsappDraft.independentVisitors.trim() || INITIAL_WHATSAPP_NUMBERS.independentVisitors,
+                    stewards: whatsappDraft.stewards.trim() || INITIAL_WHATSAPP_NUMBERS.stewards
+                };
+                setWhatsappNumbers(cleaned);
+                syncWhatsappToCloud(cleaned);
+                setIsEditingWhatsapp(false);
             };
 
             const handleShareWhatsApp = () => {
@@ -1116,12 +1288,21 @@
                                                     <span>ביקורי כיתות</span>
                                                 </h3>
                                                 {isAdmin && (
-                                                    <button 
-                                                        onClick={() => { setAddingShortageType('classVisits'); setNewShortageDate(''); }}
-                                                        className="text-xs font-bold text-teal-700 dark:text-teal-300 hover:text-teal-900 dark:hover:text-teal-200 bg-teal-50 dark:bg-teal-950/60 hover:bg-teal-100 dark:hover:bg-teal-900/60 px-2.5 py-1 rounded-lg transition border border-teal-200 dark:border-teal-800"
-                                                    >
-                                                        + הוסף תאריך
-                                                    </button>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <button 
+                                                            onClick={() => { setAddingShortageType('classVisits'); setNewShortageDate(''); }}
+                                                            className="text-xs font-bold text-teal-700 dark:text-teal-300 hover:text-teal-900 dark:hover:text-teal-200 bg-teal-50 dark:bg-teal-950/60 hover:bg-teal-100 dark:hover:bg-teal-900/60 px-2.5 py-1 rounded-lg transition border border-teal-200 dark:border-teal-800"
+                                                        >
+                                                            + הוסף תאריך
+                                                        </button>
+                                                        <button 
+                                                            onClick={() => handleClearShortageDates('classVisits')}
+                                                            className="text-xs font-bold text-rose-700 dark:text-rose-300 hover:text-rose-900 dark:hover:text-rose-200 bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 px-2.5 py-1 rounded-lg transition border border-rose-200 dark:border-rose-800"
+                                                            title="מחק את כל החוסרים בביקורי כיתות"
+                                                        >
+                                                            ניקוי
+                                                        </button>
+                                                    </div>
                                                 )}
                                             </div>
 
@@ -1155,24 +1336,33 @@
                                                 <p className="text-slate-400 dark:text-slate-500 text-xs py-2">אין חוסרים מדווחים כעת</p>
                                             ) : (
                                                 <div className="flex flex-wrap gap-2 py-1">
-                                                    {getActiveSortedDates(shiftShortages.classVisits).map((dateStr) => (
-                                                        <span 
-                                                            key={dateStr}
-                                                            className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-bold text-xs pl-3 pr-3 py-1 rounded-xl border border-slate-200 dark:border-slate-700 inline-flex items-center gap-1.5 shadow-sm group"
-                                                        >
-                                                            <span className="text-teal-600 dark:text-teal-400">📅</span>
-                                                            <span dir="ltr">{formatShortageDateDisplay(dateStr)}</span>
-                                                            {isAdmin && (
-                                                                <button 
-                                                                    onClick={() => handleRemoveShortageDate('classVisits', dateStr)}
-                                                                    className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 font-bold mr-1 text-sm transition"
-                                                                    title="הסר תאריך"
-                                                                >
-                                                                    ✕
-                                                                </button>
-                                                            )}
-                                                        </span>
-                                                    ))}
+                                                    {getActiveSortedDates(shiftShortages.classVisits).map((dateStr) => {
+                                                        const dayName = getShortageDayName(dateStr);
+                                                        return (
+                                                            <span 
+                                                                key={dateStr}
+                                                                className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-bold text-xs pl-3 pr-3 py-1 rounded-xl border border-slate-200 dark:border-slate-700 inline-flex items-center gap-1.5 shadow-sm group"
+                                                            >
+                                                                <span className="text-teal-600 dark:text-teal-400">📅</span>
+                                                                {dayName && (
+                                                                    <>
+                                                                        <span className="text-teal-700 dark:text-teal-300">{dayName}</span>
+                                                                        <span className="text-slate-300 dark:text-slate-600">•</span>
+                                                                    </>
+                                                                )}
+                                                                <span dir="ltr">{formatShortageDateDisplay(dateStr)}</span>
+                                                                {isAdmin && (
+                                                                    <button 
+                                                                        onClick={() => handleRemoveShortageDate('classVisits', dateStr)}
+                                                                        className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 font-bold mr-1 text-sm transition"
+                                                                        title="הסר תאריך"
+                                                                    >
+                                                                        ✕
+                                                                    </button>
+                                                                )}
+                                                            </span>
+                                                        );
+                                                    })}
                                                 </div>
                                             )}
                                         </div>
@@ -1187,12 +1377,21 @@
                                                     <span>מבקר עצמאי</span>
                                                 </h3>
                                                 {isAdmin && (
-                                                    <button 
-                                                        onClick={() => { setAddingShortageType('independentVisitors'); setNewShortageDate(''); }}
-                                                        className="text-xs font-bold text-teal-700 dark:text-teal-300 hover:text-teal-900 dark:hover:text-teal-200 bg-teal-50 dark:bg-teal-950/60 hover:bg-teal-100 dark:hover:bg-teal-900/60 px-2.5 py-1 rounded-lg transition border border-teal-200 dark:border-teal-800"
-                                                    >
-                                                        + הוסף תאריך
-                                                    </button>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <button 
+                                                            onClick={() => { setAddingShortageType('independentVisitors'); setNewShortageDate(''); }}
+                                                            className="text-xs font-bold text-teal-700 dark:text-teal-300 hover:text-teal-900 dark:hover:text-teal-200 bg-teal-50 dark:bg-teal-950/60 hover:bg-teal-100 dark:hover:bg-teal-900/60 px-2.5 py-1 rounded-lg transition border border-teal-200 dark:border-teal-800"
+                                                        >
+                                                            + הוסף תאריך
+                                                        </button>
+                                                        <button 
+                                                            onClick={() => handleClearShortageDates('independentVisitors')}
+                                                            className="text-xs font-bold text-rose-700 dark:text-rose-300 hover:text-rose-900 dark:hover:text-rose-200 bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 px-2.5 py-1 rounded-lg transition border border-rose-200 dark:border-rose-800"
+                                                            title="מחק את כל החוסרים במבקר עצמאי"
+                                                        >
+                                                            ניקוי
+                                                        </button>
+                                                    </div>
                                                 )}
                                             </div>
 
@@ -1226,24 +1425,33 @@
                                                 <p className="text-slate-400 dark:text-slate-500 text-xs py-2">אין חוסרים מדווחים כעת</p>
                                             ) : (
                                                 <div className="flex flex-wrap gap-2 py-1">
-                                                    {getActiveSortedDates(shiftShortages.independentVisitors).map((dateStr) => (
-                                                        <span 
-                                                            key={dateStr}
-                                                            className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-bold text-xs pl-3 pr-3 py-1 rounded-xl border border-slate-200 dark:border-slate-700 inline-flex items-center gap-1.5 shadow-sm group"
-                                                        >
-                                                            <span className="text-teal-600 dark:text-teal-400">📅</span>
-                                                            <span dir="ltr">{formatShortageDateDisplay(dateStr)}</span>
-                                                            {isAdmin && (
-                                                                <button 
-                                                                    onClick={() => handleRemoveShortageDate('independentVisitors', dateStr)}
-                                                                    className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 font-bold mr-1 text-sm transition"
-                                                                    title="הסר תאריך"
-                                                                >
-                                                                    ✕
-                                                                </button>
-                                                            )}
-                                                        </span>
-                                                    ))}
+                                                    {getActiveSortedDates(shiftShortages.independentVisitors).map((dateStr) => {
+                                                        const dayName = getShortageDayName(dateStr);
+                                                        return (
+                                                            <span 
+                                                                key={dateStr}
+                                                                className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-bold text-xs pl-3 pr-3 py-1 rounded-xl border border-slate-200 dark:border-slate-700 inline-flex items-center gap-1.5 shadow-sm group"
+                                                            >
+                                                                <span className="text-teal-600 dark:text-teal-400">📅</span>
+                                                                {dayName && (
+                                                                    <>
+                                                                        <span className="text-teal-700 dark:text-teal-300">{dayName}</span>
+                                                                        <span className="text-slate-300 dark:text-slate-600">•</span>
+                                                                    </>
+                                                                )}
+                                                                <span dir="ltr">{formatShortageDateDisplay(dateStr)}</span>
+                                                                {isAdmin && (
+                                                                    <button 
+                                                                        onClick={() => handleRemoveShortageDate('independentVisitors', dateStr)}
+                                                                        className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 font-bold mr-1 text-sm transition"
+                                                                        title="הסר תאריך"
+                                                                    >
+                                                                        ✕
+                                                                    </button>
+                                                                )}
+                                                            </span>
+                                                        );
+                                                    })}
                                                 </div>
                                             )}
                                         </div>
@@ -1258,12 +1466,21 @@
                                                     <span>דיילים</span>
                                                 </h3>
                                                 {isAdmin && (
-                                                    <button 
-                                                        onClick={() => { setAddingShortageType('stewards'); setNewShortageDate(''); }}
-                                                        className="text-xs font-bold text-teal-700 dark:text-teal-300 hover:text-teal-900 dark:hover:text-teal-200 bg-teal-50 dark:bg-teal-950/60 hover:bg-teal-100 dark:hover:bg-teal-900/60 px-2.5 py-1 rounded-lg transition border border-teal-200 dark:border-teal-800"
-                                                    >
-                                                        + הוסף תאריך
-                                                    </button>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <button 
+                                                            onClick={() => { setAddingShortageType('stewards'); setNewShortageDate(''); }}
+                                                            className="text-xs font-bold text-teal-700 dark:text-teal-300 hover:text-teal-900 dark:hover:text-teal-200 bg-teal-50 dark:bg-teal-950/60 hover:bg-teal-100 dark:hover:bg-teal-900/60 px-2.5 py-1 rounded-lg transition border border-teal-200 dark:border-teal-800"
+                                                        >
+                                                            + הוסף תאריך
+                                                        </button>
+                                                        <button 
+                                                            onClick={() => handleClearShortageDates('stewards')}
+                                                            className="text-xs font-bold text-rose-700 dark:text-rose-300 hover:text-rose-900 dark:hover:text-rose-200 bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 px-2.5 py-1 rounded-lg transition border border-rose-200 dark:border-rose-800"
+                                                            title="מחק את כל החוסרים בדיילים"
+                                                        >
+                                                            ניקוי
+                                                        </button>
+                                                    </div>
                                                 )}
                                             </div>
 
@@ -1297,24 +1514,33 @@
                                                 <p className="text-slate-400 dark:text-slate-500 text-xs py-2">אין חוסרים מדווחים כעת</p>
                                             ) : (
                                                 <div className="flex flex-wrap gap-2 py-1">
-                                                    {getActiveSortedDates(shiftShortages.stewards).map((dateStr) => (
-                                                        <span 
-                                                            key={dateStr}
-                                                            className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-bold text-xs pl-3 pr-3 py-1 rounded-xl border border-slate-200 dark:border-slate-700 inline-flex items-center gap-1.5 shadow-sm group"
-                                                        >
-                                                            <span className="text-teal-600 dark:text-teal-400">📅</span>
-                                                            <span dir="ltr">{formatShortageDateDisplay(dateStr)}</span>
-                                                            {isAdmin && (
-                                                                <button 
-                                                                    onClick={() => handleRemoveShortageDate('stewards', dateStr)}
-                                                                    className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 font-bold mr-1 text-sm transition"
-                                                                    title="הסר תאריך"
-                                                                >
-                                                                    ✕
-                                                                </button>
-                                                            )}
-                                                        </span>
-                                                    ))}
+                                                    {getActiveSortedDates(shiftShortages.stewards).map((dateStr) => {
+                                                        const dayName = getShortageDayName(dateStr);
+                                                        return (
+                                                            <span 
+                                                                key={dateStr}
+                                                                className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-bold text-xs pl-3 pr-3 py-1 rounded-xl border border-slate-200 dark:border-slate-700 inline-flex items-center gap-1.5 shadow-sm group"
+                                                            >
+                                                                <span className="text-teal-600 dark:text-teal-400">📅</span>
+                                                                {dayName && (
+                                                                    <>
+                                                                        <span className="text-teal-700 dark:text-teal-300">{dayName}</span>
+                                                                        <span className="text-slate-300 dark:text-slate-600">•</span>
+                                                                    </>
+                                                                )}
+                                                                <span dir="ltr">{formatShortageDateDisplay(dateStr)}</span>
+                                                                {isAdmin && (
+                                                                    <button 
+                                                                        onClick={() => handleRemoveShortageDate('stewards', dateStr)}
+                                                                        className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 font-bold mr-1 text-sm transition"
+                                                                        title="הסר תאריך"
+                                                                    >
+                                                                        ✕
+                                                                    </button>
+                                                                )}
+                                                            </span>
+                                                        );
+                                                    })}
                                                 </div>
                                             )}
                                         </div>
@@ -1327,7 +1553,7 @@
                                     </p>
                                     <div className="flex flex-wrap items-center justify-center gap-2.5">
                                         <a 
-                                            href="https://wa.me/972508655616" 
+                                            href={buildWhatsAppLink(whatsappNumbers.classVisits)} 
                                             target="_blank" 
                                             rel="noopener noreferrer"
                                             className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition shadow-sm inline-flex items-center gap-1.5"
@@ -1336,7 +1562,7 @@
                                             <span>ביקורי כיתות</span>
                                         </a>
                                         <a 
-                                            href="https://wa.me/972508808920" 
+                                            href={buildWhatsAppLink(whatsappNumbers.independentVisitors)} 
                                             target="_blank" 
                                             rel="noopener noreferrer"
                                             className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition shadow-sm inline-flex items-center gap-1.5"
@@ -1345,7 +1571,7 @@
                                             <span>מבקר עצמאי</span>
                                         </a>
                                         <a 
-                                            href="https://wa.me/972508655616" 
+                                            href={buildWhatsAppLink(whatsappNumbers.stewards)} 
                                             target="_blank" 
                                             rel="noopener noreferrer"
                                             className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition shadow-sm inline-flex items-center gap-1.5"
@@ -1353,7 +1579,78 @@
                                             <span>👔</span>
                                             <span>דיילים</span>
                                         </a>
+                                        {isAdmin && (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    if (!isEditingWhatsapp) {
+                                                        setWhatsappDraft(whatsappNumbers);
+                                                    }
+                                                    setIsEditingWhatsapp(prev => !prev);
+                                                }}
+                                                className="bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold px-3 py-2 rounded-xl transition border border-slate-300 dark:border-slate-700 inline-flex items-center gap-1.5"
+                                            >
+                                                <span>✏️</span>
+                                                <span>עריכת מספרי WhatsApp</span>
+                                            </button>
+                                        )}
                                     </div>
+
+                                    {isAdmin && isEditingWhatsapp && (
+                                        <div className="mt-4 max-w-2xl mx-auto bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-2xl p-4 text-right shadow-sm">
+                                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+                                                <div>
+                                                    <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">🏫 ביקורי כיתות:</label>
+                                                    <input
+                                                        type="tel"
+                                                        dir="ltr"
+                                                        value={whatsappDraft.classVisits}
+                                                        onChange={(e) => setWhatsappDraft(prev => ({ ...prev, classVisits: e.target.value }))}
+                                                        placeholder="050-0000000"
+                                                        className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">🎟️ מבקר עצמאי:</label>
+                                                    <input
+                                                        type="tel"
+                                                        dir="ltr"
+                                                        value={whatsappDraft.independentVisitors}
+                                                        onChange={(e) => setWhatsappDraft(prev => ({ ...prev, independentVisitors: e.target.value }))}
+                                                        placeholder="050-0000000"
+                                                        className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">👔 דיילים:</label>
+                                                    <input
+                                                        type="tel"
+                                                        dir="ltr"
+                                                        value={whatsappDraft.stewards}
+                                                        onChange={(e) => setWhatsappDraft(prev => ({ ...prev, stewards: e.target.value }))}
+                                                        placeholder="050-0000000"
+                                                        className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                    />
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center justify-end gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setIsEditingWhatsapp(false)}
+                                                    className="text-xs font-bold text-slate-600 dark:text-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-200/70 dark:hover:bg-slate-700 transition"
+                                                >
+                                                    ביטול
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleSaveWhatsappNumbers}
+                                                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-1.5 rounded-lg transition shadow-sm"
+                                                >
+                                                    שמור מספרים
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
 
@@ -1765,7 +2062,7 @@
                             </button>
                             {isAdmin && (
                                 <div className="text-xs text-slate-500 dark:text-slate-400 font-medium flex items-center gap-2 bg-slate-100 dark:bg-slate-800 px-3.5 py-1 rounded-full border border-slate-200 dark:border-slate-700">
-                                    <span>גרסה 1.37</span>
+                                    <span>גרסה 1.41</span>
                                     <span>•</span>
                                     <span>עודכן לאחרונה: 19/11/2026</span>
                                 </div>
@@ -2042,13 +2339,88 @@
                                     </div>
 
                                     <div>
-                                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">תוכן המודעה (אופציונלי):</label>
+                                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">תוכן המודעה:</label>
+                                        <div className="flex flex-wrap items-center gap-1.5 mb-1.5 bg-slate-50 dark:bg-slate-800/80 p-1.5 rounded-xl border border-slate-200 dark:border-slate-700">
+                                            <button
+                                                type="button"
+                                                onClick={applyBoldFormat}
+                                                className="px-2.5 py-1 rounded-lg text-xs font-extrabold bg-white dark:bg-slate-900 hover:bg-purple-50 dark:hover:bg-purple-950/60 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-700 transition shadow-2xs"
+                                                title="הדגשת טקסט (**טקסט**)"
+                                            >
+                                                B הדגשה
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={handleOpenLinkBuilder}
+                                                className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition shadow-2xs ${
+                                                    showLinkBuilder
+                                                        ? 'bg-purple-600 text-white border-purple-600'
+                                                        : 'bg-white dark:bg-slate-900 hover:bg-purple-50 dark:hover:bg-purple-950/60 text-slate-800 dark:text-slate-100 border-slate-200 dark:border-slate-700'
+                                                }`}
+                                                title="הוספת קישור לחיץ"
+                                            >
+                                                🔗 קישור
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={applyBulletListFormat}
+                                                className="px-2.5 py-1 rounded-lg text-xs font-bold bg-white dark:bg-slate-900 hover:bg-purple-50 dark:hover:bg-purple-950/60 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-700 transition shadow-2xs"
+                                                title="הוספת רשימת תבליטים"
+                                            >
+                                                • רשימה
+                                            </button>
+                                        </div>
+
+                                        {showLinkBuilder && (
+                                            <div className="mb-2 p-2.5 rounded-xl bg-purple-50/70 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800/70 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                                                <input
+                                                    type="text"
+                                                    value={linkTextInput}
+                                                    onChange={(e) => setLinkTextInput(e.target.value)}
+                                                    placeholder="טקסט להצגה (למשל: לטופס)"
+                                                    className="flex-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                                />
+                                                <input
+                                                    type="url"
+                                                    dir="ltr"
+                                                    value={linkUrlInput}
+                                                    onChange={(e) => setLinkUrlInput(e.target.value)}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter') {
+                                                            e.preventDefault();
+                                                            handleInsertLink();
+                                                        }
+                                                    }}
+                                                    placeholder="https://..."
+                                                    className="flex-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                                    autoFocus
+                                                />
+                                                <div className="flex items-center gap-1.5 justify-end">
+                                                    <button
+                                                        type="button"
+                                                        onClick={handleInsertLink}
+                                                        className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition"
+                                                    >
+                                                        הוסף
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setShowLinkBuilder(false)}
+                                                        className="text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 text-xs font-bold px-1.5 py-1"
+                                                    >
+                                                        ✕
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        )}
+
                                         <textarea 
+                                            ref={contentTextareaRef}
                                             rows={4}
                                             value={formData.content}
                                             onChange={(e) => setFormData(prev => ({ ...prev, content: e.target.value }))}
                                             className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-                                            placeholder="פירוט המודעה (אופציונלי)..."
+                                            placeholder="פירוט המודעה..."
                                         ></textarea>
                                         <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 font-medium">
                                             💡 <strong>טיפ:</strong> להדגשה: <code>**טקסט**</code> | קישור: <code>[שם](https://..)</code> | רשימה: תחילת שורה ב-<code>*</code> או <code>-</code>.
@@ -2104,15 +2476,20 @@
                                             <span className="text-xs font-bold text-slate-700 dark:text-slate-300">נעץ מודעה בראש הלוח 📌</span>
                                         </label>
 
-                                        <label className="flex items-center gap-2 cursor-pointer">
-                                            <input 
-                                                type="checkbox"
-                                                checked={formData.showOnTv}
-                                                onChange={(e) => setFormData(prev => ({ ...prev, showOnTv: e.target.checked }))}
-                                                className="rounded text-purple-600 focus:ring-purple-500"
-                                            />
-                                            <span className="text-xs font-bold text-slate-700 dark:text-slate-300">הצג בטלוויזיה 📺</span>
-                                        </label>
+                                        <div>
+                                            <label className="flex items-center gap-2 cursor-pointer">
+                                                <input 
+                                                    type="checkbox"
+                                                    checked={formData.showOnTv}
+                                                    onChange={(e) => setFormData(prev => ({ ...prev, showOnTv: e.target.checked }))}
+                                                    className="rounded text-purple-600 focus:ring-purple-500"
+                                                />
+                                                <span className="text-xs font-bold text-slate-700 dark:text-slate-300">הצג בטלוויזיה 📺</span>
+                                            </label>
+                                            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 font-medium">
+                                                💡 <strong>טיפ:</strong> מודעות יוצגו במסך הטלוויזיה למשך 7 ימים. מודעות מוצמדות יוצגו עד שיפוג תוקפן.
+                                            </p>
+                                        </div>
                                     </div>
 
                                     <div className="flex items-center justify-end gap-2 pt-4 border-t border-slate-100 dark:border-slate-800">
