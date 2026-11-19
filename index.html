@@ -872,6 +872,17 @@
                 }));
             };
 
+            const handleTogglePin = (id) => {
+                setNotices(prev => prev.map(n => {
+                    if (n.id === id) {
+                        const updated = { ...n, pinned: !n.pinned };
+                        syncNoticeToCloud(updated);
+                        return updated;
+                    }
+                    return n;
+                }));
+            };
+
             const confirmDeleteNotice = () => {
                 if (deletingNoticeId) {
                     setNotices(prev => prev.filter(n => n.id !== deletingNoticeId));
@@ -1454,6 +1465,235 @@
                                 </div>
                             </div>
                         )}
+
+                        {/* Active Notices Grid (Weekly & All Views - Masonry Layout) */}
+                        {(viewMode === 'weekly' || viewMode === 'all') && (
+                            displayedNotices.length === 0 ? (
+                                <div className="bg-white dark:bg-slate-900 rounded-3xl p-10 text-center border border-slate-200 dark:border-slate-800 shadow-sm">
+                                    <div className="text-4xl mb-3">📭</div>
+                                    <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 mb-1">
+                                        לא נמצאו מודעות להצגה
+                                    </h3>
+                                    <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+                                        {searchQuery.trim() || selectedCategories.length > 0
+                                            ? 'נסו לשנות את אפשרויות הסינון או החיפוש כדי לראות מודעות נוספות.'
+                                            : viewMode === 'weekly'
+                                                ? 'לא פורסמו מודעות חדשות ב-7 הימים האחרונים.'
+                                                : 'עדיין לא נוספו מודעות ללוח.'}
+                                    </p>
+                                    {(searchQuery.trim() || selectedCategories.length > 0) && (
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setSelectedCategories([]);
+                                                setSelectedSubCategories([]);
+                                                setSearchQuery('');
+                                            }}
+                                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-xl transition shadow-sm"
+                                        >
+                                            איפוס סינון וחיפוש
+                                        </button>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="columns-1 md:columns-2 lg:columns-3 gap-5">
+                                    {displayedNotices.map((notice) => {
+                                        const cat = CATEGORIES[notice.category] || CATEGORIES['מנהלה'];
+                                        return (
+                                            <article
+                                                key={notice.id}
+                                                className={`break-inside-avoid mb-5 bg-white dark:bg-slate-900 rounded-2xl shadow-sm hover:shadow-md border border-slate-200 dark:border-slate-800 overflow-hidden transition-all duration-200 flex flex-col ${
+                                                    notice.pinned ? 'ring-2 ring-amber-400/70 dark:ring-amber-500/50' : ''
+                                                }`}
+                                            >
+                                                {/* Category Color Top Accent */}
+                                                <div className="h-2 w-full" style={{ backgroundColor: cat.color }}></div>
+
+                                                <div className="p-5 flex flex-col gap-3">
+                                                    {/* Header Badges */}
+                                                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                                                        <span
+                                                            className="px-3 py-1 rounded-lg text-xs font-bold"
+                                                            style={{ backgroundColor: cat.bg, color: cat.text }}
+                                                        >
+                                                            {cat.label}
+                                                        </span>
+
+                                                        <div className="flex items-center gap-1.5">
+                                                            {notice.pinned && (
+                                                                <span className="bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 px-2.5 py-0.5 rounded-lg text-xs font-bold">
+                                                                    📌 נעוץ
+                                                                </span>
+                                                            )}
+                                                            {isAdmin && notice.showOnTv === false && (
+                                                                <span className="bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded-lg text-[11px] font-bold" title="מוסתר ממסך הטלוויזיה">
+                                                                    🚫📺
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Notice Title */}
+                                                    <h3 className="text-lg font-extrabold text-slate-900 dark:text-white leading-snug">
+                                                        <HighlightText text={notice.title} query={searchQuery} />
+                                                    </h3>
+
+                                                    {/* Notice Content (Optional) */}
+                                                    {notice.content && notice.content.trim() && (
+                                                        <RichTextDisplay
+                                                            text={notice.content}
+                                                            query={searchQuery}
+                                                            className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed break-words"
+                                                        />
+                                                    )}
+
+                                                    {/* Notice Image (Optional) */}
+                                                    {notice.imageUrl && (
+                                                        <div className="mt-1">
+                                                            <img
+                                                                src={notice.imageUrl}
+                                                                alt={notice.title}
+                                                                onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                                                                className="w-full max-h-72 object-cover rounded-xl border border-slate-100 dark:border-slate-800"
+                                                            />
+                                                        </div>
+                                                    )}
+
+                                                    {/* Footer Metadata */}
+                                                    <div className="pt-3 mt-1 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                                                        <span>
+                                                            <span dir="ltr" className="font-bold text-slate-600 dark:text-slate-300">
+                                                                {formatShortageDateDisplay(notice.createdAt)}
+                                                            </span>
+                                                            {' • '}
+                                                            {getRelativeDateText(notice.createdAt)}
+                                                        </span>
+                                                        {notice.expiresAt && (
+                                                            <span className="text-[11px] text-amber-700 dark:text-amber-400 font-medium">
+                                                                בתוקף עד <span dir="ltr">{formatShortageDateDisplay(notice.expiresAt)}</span>
+                                                            </span>
+                                                        )}
+                                                    </div>
+
+                                                    {/* Admin Controls */}
+                                                    {isAdmin && (
+                                                        <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-end gap-1.5 no-print">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleTogglePin(notice.id)}
+                                                                className={`text-xs font-bold px-2.5 py-1 rounded-lg transition border ${
+                                                                    notice.pinned
+                                                                        ? 'bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-800'
+                                                                        : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
+                                                                }`}
+                                                                title={notice.pinned ? 'בטל נעיצה' : 'נעץ מודעה'}
+                                                            >
+                                                                {notice.pinned ? '📌 נעוץ' : '📌 נעיצה'}
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleOpenForm(notice)}
+                                                                className="bg-purple-50 dark:bg-purple-950/60 hover:bg-purple-100 dark:hover:bg-purple-900/60 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 text-xs font-bold px-2.5 py-1 rounded-lg transition"
+                                                            >
+                                                                ✏️ עריכה
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleToggleArchive(notice.id, true)}
+                                                                className="bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 text-xs font-bold px-2.5 py-1 rounded-lg transition"
+                                                            >
+                                                                📦 ארכיון
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setDeletingNoticeId(notice.id)}
+                                                                className="bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 text-xs font-bold px-2.5 py-1 rounded-lg transition"
+                                                            >
+                                                                🗑️ מחיקה
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </article>
+                                        );
+                                    })}
+                                </div>
+                            )
+                        )}
+
+                        {/* Archive View (Admin Only) */}
+                        {viewMode === 'archive' && isAdmin && (
+                            <div className="space-y-4">
+                                <div className="bg-slate-800 dark:bg-slate-900 text-white p-5 rounded-2xl border border-slate-700 flex items-center justify-between">
+                                    <div>
+                                        <h2 className="text-lg font-extrabold flex items-center gap-2">
+                                            <span>📦</span>
+                                            <span>ארכיון מודעות ({archivedNotices.length})</span>
+                                        </h2>
+                                        <p className="text-xs text-slate-300 mt-0.5">מודעות שהועברו לארכיון ואינן מוצגות בלוח הפעיל או בטלוויזיה</p>
+                                    </div>
+                                </div>
+
+                                {archivedNotices.length === 0 ? (
+                                    <div className="bg-white dark:bg-slate-900 rounded-3xl p-10 text-center border border-slate-200 dark:border-slate-800 shadow-sm">
+                                        <div className="text-4xl mb-3">🗂️</div>
+                                        <p className="text-sm font-bold text-slate-600 dark:text-slate-300">הארכיון ריק כרגע</p>
+                                    </div>
+                                ) : (
+                                    <div className="columns-1 md:columns-2 lg:columns-3 gap-5">
+                                        {archivedNotices.map((notice) => {
+                                            const cat = CATEGORIES[notice.category] || CATEGORIES['מנהלה'];
+                                            return (
+                                                <article
+                                                    key={notice.id}
+                                                    className="break-inside-avoid mb-5 bg-white/80 dark:bg-slate-900/80 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col opacity-90"
+                                                >
+                                                    <div className="h-1.5 w-full opacity-60" style={{ backgroundColor: cat.color }}></div>
+                                                    <div className="p-5 flex flex-col gap-3">
+                                                        <div className="flex items-center justify-between">
+                                                            <span
+                                                                className="px-3 py-1 rounded-lg text-xs font-bold"
+                                                                style={{ backgroundColor: cat.bg, color: cat.text }}
+                                                            >
+                                                                {cat.label}
+                                                            </span>
+                                                            <span className="text-xs text-slate-400" dir="ltr">
+                                                                {formatShortageDateDisplay(notice.createdAt)}
+                                                            </span>
+                                                        </div>
+                                                        <h3 className="text-base font-extrabold text-slate-800 dark:text-slate-100">
+                                                            {notice.title}
+                                                        </h3>
+                                                        {notice.content && notice.content.trim() && (
+                                                            <RichTextDisplay
+                                                                text={notice.content}
+                                                                className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed"
+                                                            />
+                                                        )}
+                                                        <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleToggleArchive(notice.id, false)}
+                                                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition shadow-sm"
+                                                            >
+                                                                ♻️ שחזור ללוח
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setDeletingNoticeId(notice.id)}
+                                                                className="bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 text-xs font-bold px-3 py-1.5 rounded-lg transition"
+                                                            >
+                                                                🗑️ מחיקה
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </article>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </main>
 
                     {/* Footer */}
@@ -1468,7 +1708,7 @@
                             </button>
                             {isAdmin && (
                                 <div className="text-xs text-slate-500 dark:text-slate-400 font-medium flex items-center gap-2 bg-slate-100 dark:bg-slate-800 px-3.5 py-1 rounded-full border border-slate-200 dark:border-slate-700">
-                                    <span>גרסה 1.32</span>
+                                    <span>גרסה 1.33</span>
                                     <span>•</span>
                                     <span>עודכן לאחרונה: 19/11/2026</span>
                                 </div>
