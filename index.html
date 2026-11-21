@@ -91,6 +91,29 @@
         .animate-tv-fade {
             animation: tvFadeIn 0.4s ease-out forwards;
         }
+
+        /* Collapsible slide-down animation */
+        .collapsible-grid {
+            display: grid;
+            grid-template-rows: 0fr;
+            transition: grid-template-rows 320ms cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .collapsible-grid.is-open {
+            grid-template-rows: 1fr;
+        }
+        .collapsible-inner {
+            overflow: hidden;
+            min-height: 0;
+        }
+        .collapsible-content {
+            transition: transform 320ms cubic-bezier(0.4, 0, 0.2, 1), opacity 260ms ease;
+            transform: translateY(-8px);
+            opacity: 0;
+        }
+        .collapsible-grid.is-open .collapsible-content {
+            transform: translateY(0);
+            opacity: 1;
+        }
     </style>
 </head>
 <body class="bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 antialiased min-h-screen transition-colors duration-200">
@@ -262,14 +285,43 @@
                 dt.setHours(0, 0, 0, 0);
                 return dt;
             }
+            if (/^\d{1,2}\.\d{1,2}\.\d{2,4}$/.test(trimmed)) {
+                const parts = trimmed.split('.').map(Number);
+                const year = parts[2] < 100 ? 2000 + parts[2] : parts[2];
+                const dt = new Date(year, parts[1] - 1, parts[0]);
+                dt.setHours(0, 0, 0, 0);
+                return dt;
+            }
             if (/^\d{1,2}\/\d{1,2}$/.test(trimmed)) {
                 const [d, m] = trimmed.split('/').map(Number);
                 const now = new Date();
                 let year = now.getFullYear();
-                if (now.getMonth() >= 9 && m <= 2) {
+                const currentMonth = now.getMonth() + 1;
+                if (currentMonth <= 3 && m >= 10) {
+                    year -= 1;
+                } else if (currentMonth >= 10 && m <= 3) {
                     year += 1;
                 }
                 const dt = new Date(year, m - 1, d);
+                dt.setHours(0, 0, 0, 0);
+                return dt;
+            }
+            if (/^\d{1,2}\.\d{1,2}$/.test(trimmed)) {
+                const [d, m] = trimmed.split('.').map(Number);
+                const now = new Date();
+                let year = now.getFullYear();
+                const currentMonth = now.getMonth() + 1;
+                if (currentMonth <= 3 && m >= 10) {
+                    year -= 1;
+                } else if (currentMonth >= 10 && m <= 3) {
+                    year += 1;
+                }
+                const dt = new Date(year, m - 1, d);
+                dt.setHours(0, 0, 0, 0);
+                return dt;
+            }
+            if (!isNaN(Date.parse(trimmed))) {
+                const dt = new Date(trimmed);
                 dt.setHours(0, 0, 0, 0);
                 return dt;
             }
@@ -278,10 +330,21 @@
 
         function isShortageDatePassed(dateStr) {
             const target = parseShortageDate(dateStr);
-            if (!target) return false;
+            if (!target) return true;
             const today = new Date();
             today.setHours(0, 0, 0, 0);
             return target < today;
+        }
+
+        function cleanShortagesData(raw) {
+            if (!raw) return { classVisits: [], independentVisitors: [], stewards: [] };
+            const types = ['classVisits', 'independentVisitors', 'stewards'];
+            const cleaned = {};
+            types.forEach(type => {
+                const list = Array.isArray(raw[type]) ? raw[type] : [];
+                cleaned[type] = list.filter(d => !isShortageDatePassed(d));
+            });
+            return cleaned;
         }
 
         function formatShortageDateDisplay(dateStr) {
@@ -548,10 +611,20 @@
 
             const [shiftShortages, setShiftShortages] = useState(() => {
                 const saved = localStorage.getItem('garden_shift_shortages');
-                if (saved) return JSON.parse(saved);
-                if (window.INITIAL_EXPORTED_SHORTAGES) return window.INITIAL_EXPORTED_SHORTAGES;
-                return INITIAL_SHORTAGES;
+                if (saved) {
+                    try {
+                        const parsed = JSON.parse(saved);
+                        const cleaned = cleanShortagesData(parsed);
+                        if (cleaned) return cleaned;
+                    } catch (e) {}
+                }
+                if (window.INITIAL_EXPORTED_SHORTAGES) {
+                    const cleaned = cleanShortagesData(window.INITIAL_EXPORTED_SHORTAGES);
+                    if (cleaned) return cleaned;
+                }
+                return cleanShortagesData(INITIAL_SHORTAGES);
             });
+            const [isShortagesOpen, setIsShortagesOpen] = useState(false);
 
             const [whatsappNumbers, setWhatsappNumbers] = useState(() => {
                 const saved = localStorage.getItem('garden_whatsapp_numbers');
@@ -597,7 +670,6 @@
 
             const [showFormModal, setShowFormModal] = useState(false);
             const [editingNotice, setEditingNotice] = useState(null);
-            const [copySuccess, setCopySuccess] = useState(false);
             const [addingShortageType, setAddingShortageType] = useState(null);
             const [newShortageDate, setNewShortageDate] = useState('');
 
@@ -670,7 +742,14 @@
                         const shortagesDocRef = doc(db, 'clore_settings', 'shortages');
                         unsubShortages = onSnapshot(shortagesDocRef, (docSnap) => {
                             if (docSnap.exists()) {
-                                setShiftShortages(docSnap.data());
+                                const cloudData = docSnap.data() || {};
+                                const cleaned = cleanShortagesData(cloudData);
+                                const types = ['classVisits', 'independentVisitors', 'stewards'];
+                                const hasExpired = types.some(t => (cloudData[t] || []).length !== (cleaned[t] || []).length);
+                                setShiftShortages(cleaned);
+                                if (hasExpired) {
+                                    syncShortagesToCloud(cleaned);
+                                }
                             }
                         }, (err) => {
                             console.warn("Firestore shortages snapshot error:", err);
@@ -733,8 +812,15 @@
                 };
 
                 pruneExpiredShortages();
-                const hourlyCheck = setInterval(pruneExpiredShortages, 3600000);
-                return () => clearInterval(hourlyCheck);
+                const periodicCheck = setInterval(pruneExpiredShortages, 60000);
+                return () => clearInterval(periodicCheck);
+            }, [shiftShortages]);
+
+            const totalShortagesCount = useMemo(() => {
+                const c1 = getActiveSortedDates(shiftShortages?.classVisits).length;
+                const c2 = getActiveSortedDates(shiftShortages?.independentVisitors).length;
+                const c3 = getActiveSortedDates(shiftShortages?.stewards).length;
+                return c1 + c2 + c3;
             }, [shiftShortages]);
 
             const activeNotices = useMemo(() => {
@@ -829,6 +915,9 @@
             const syncShortagesToCloud = async (updatedShortages) => {
                 if (!window.firebaseDb) return;
                 try {
+                    if (window.firebaseAuthReady) {
+                        await window.firebaseAuthReady;
+                    }
                     const { doc, setDoc } = window.firestoreTools;
                     const shortagesDocRef = doc(window.firebaseDb, 'clore_settings', 'shortages');
                     await setDoc(shortagesDocRef, updatedShortages);
@@ -866,27 +955,6 @@
                 window.addEventListener('keydown', handleKeyDown);
                 return () => window.removeEventListener('keydown', handleKeyDown);
             }, [viewMode]);
-
-            const weeklySummaryData = useMemo(() => {
-                const today = new Date();
-                const sunday = new Date(today);
-                sunday.setDate(today.getDate() - today.getDay());
-                const saturday = new Date(sunday);
-                saturday.setDate(sunday.getDate() + 6);
-
-                const list = activeNotices.filter(n => {
-                    const d = new Date(n.createdAt);
-                    return d >= sunday && d <= saturday;
-                });
-
-                const formatShort = (dt) => `${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}`;
-
-                return {
-                    startDateStr: formatShort(sunday),
-                    endDateStr: formatShort(saturday),
-                    notices: list
-                };
-            }, [activeNotices]);
 
             const tvNotices = useMemo(() => {
                 const weekAgo = new Date();
@@ -1143,12 +1211,13 @@
             };
 
             const handleSaveShortageDate = (type) => {
-                if (newShortageDate.trim() && !isShortageDatePassed(newShortageDate.trim())) {
+                const trimmed = newShortageDate.trim();
+                if (trimmed && !isShortageDatePassed(trimmed)) {
                     const currentList = shiftShortages[type] || [];
-                    if (!currentList.includes(newShortageDate.trim())) {
+                    if (!currentList.includes(trimmed)) {
                         const updated = {
                             ...shiftShortages,
-                            [type]: [...currentList, newShortageDate.trim()]
+                            [type]: [...currentList, trimmed].filter(d => !isShortageDatePassed(d))
                         };
                         setShiftShortages(updated);
                         syncShortagesToCloud(updated);
@@ -1161,7 +1230,7 @@
             const handleRemoveShortageDate = (type, dateStrToRemove) => {
                 const updated = {
                     ...shiftShortages,
-                    [type]: (shiftShortages[type] || []).filter(d => d !== dateStrToRemove)
+                    [type]: (shiftShortages[type] || []).filter(d => d !== dateStrToRemove && !isShortageDatePassed(d))
                 };
                 setShiftShortages(updated);
                 syncShortagesToCloud(updated);
@@ -1185,17 +1254,6 @@
                 setWhatsappNumbers(cleaned);
                 syncWhatsappToCloud(cleaned);
                 setIsEditingWhatsapp(false);
-            };
-
-            const handleShareWhatsApp = () => {
-                const text = encodeURIComponent(getWhatsAppFormattedText());
-                window.open(`https://api.whatsapp.com/send?text=${text}`, '_blank');
-            };
-
-            const handleCopyWhatsAppText = () => {
-                navigator.clipboard.writeText(getWhatsAppFormattedText());
-                setCopySuccess(true);
-                setTimeout(() => setCopySuccess(false), 2500);
             };
 
             const handleDownloadHtml = () => {
@@ -1222,7 +1280,7 @@
                             <div className="flex items-center gap-2 sm:gap-3 min-w-0">
                                 <div className="min-w-0">
                                     <div className="flex items-center gap-2">
-                                        <h1 className="text-sm sm:text-lg font-bold text-slate-900 dark:text-white whitespace-nowrap">עדכוני גן המדע</h1>
+                                        <h1 className="text-sm sm:lg font-bold text-slate-900 dark:text-white whitespace-nowrap">עדכוני גן המדע</h1>
                                         {isCloudConnected && (
                                             <span className="bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800" title="מחובר לענן ומסונכרן בזמן אמת">
                                                 ☁️ מחובר לענן
@@ -1270,15 +1328,48 @@
                     <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
                         
                         {/* Shift Shortages Section */}
-                        <div className="bg-white dark:bg-slate-900 p-5 sm:p-6 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 mb-6 no-print transition-colors">
-                            <div className="flex items-center justify-between mb-4 border-b border-slate-100 dark:border-slate-800 pb-3">
-                                <h2 className="text-base font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                                    <span>📌</span>
-                                    <span>חוסרים בשיבוצים</span>
-                                </h2>
-                            </div>
+                        <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 mb-6 no-print transition-colors overflow-hidden">
+                            {/* Collapsible Header Button */}
+                            <button
+                                type="button"
+                                onClick={() => setIsShortagesOpen(prev => !prev)}
+                                className="w-full flex items-center justify-between p-4 sm:p-5 text-right hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors cursor-pointer select-none group"
+                                aria-expanded={isShortagesOpen}
+                            >
+                                <div className="flex items-center gap-3">
+                                    <h2 className="text-base font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                                        <span>📌</span>
+                                        <span>חוסרים בשיבוצים</span>
+                                    </h2>
+                                    <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full border transition-colors ${
+                                        totalShortagesCount > 0 
+                                            ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-800' 
+                                            : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                                    }`}>
+                                        {`${totalShortagesCount} חוסרים`}
+                                    </span>
+                                </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                                <div className="flex items-center gap-2 text-slate-400 dark:text-slate-500 group-hover:text-slate-600 dark:group-hover:text-slate-300 transition-colors">
+                                    <span className="text-xs font-medium hidden sm:inline">
+                                        {isShortagesOpen ? 'סגירה' : 'הצגת חוסרים'}
+                                    </span>
+                                    <svg 
+                                        className={`w-5 h-5 transition-transform duration-300 transform ${isShortagesOpen ? 'rotate-180' : ''}`} 
+                                        fill="none" 
+                                        stroke="currentColor" 
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                </div>
+                            </button>
+
+                            {/* Collapsible Sliding Container */}
+                            <div className={`collapsible-grid ${isShortagesOpen ? 'is-open' : ''}`}>
+                                <div className="collapsible-inner">
+                                    <div className="collapsible-content px-5 pb-5 sm:px-6 sm:pb-6 pt-2 border-t border-slate-100 dark:border-slate-800">
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                                 {/* Class Visits Column */}
                                     <div className="bg-slate-50/80 dark:bg-slate-800/60 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 shadow-sm flex flex-col justify-between">
                                         <div>
@@ -1653,6 +1744,9 @@
                                     )}
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                </div>
 
                         {/* View Navigation Tabs Bar */}
                         <div className="flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-slate-900 p-2 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-6 no-print transition-colors">
@@ -1716,26 +1810,6 @@
                                         עדכונים שפורסמו ב-7 הימים האחרונים ({weeklyNotices.length})
                                     </h2>
                                 </div>
-
-                                {isAdmin && (
-                                    <div className="flex flex-wrap items-center gap-2 shrink-0">
-                                        <button 
-                                            onClick={handleShareWhatsApp}
-                                            className="bg-emerald-500 hover:bg-emerald-400 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition shadow flex items-center gap-1.5 border border-emerald-400/40"
-                                        >
-                                            <span>📲</span>
-                                            <span>שליחה ב-WhatsApp</span>
-                                        </button>
-
-                                        <button 
-                                            onClick={handleCopyWhatsAppText}
-                                            className="bg-white/20 hover:bg-white/30 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 border border-white/30"
-                                        >
-                                            <span>📋</span>
-                                            <span>{copySuccess ? 'הועתק! ✓' : 'העתקה ל-WhatsApp'}</span>
-                                        </button>
-                                    </div>
-                                )}
                             </div>
                         )}
 
@@ -2062,9 +2136,9 @@
                             </button>
                             {isAdmin && (
                                 <div className="text-xs text-slate-500 dark:text-slate-400 font-medium flex items-center gap-2 bg-slate-100 dark:bg-slate-800 px-3.5 py-1 rounded-full border border-slate-200 dark:border-slate-700">
-                                    <span>גרסה 1.41</span>
+                                    <span>גרסה 1.43</span>
                                     <span>•</span>
-                                    <span>עודכן לאחרונה: 19/11/2026</span>
+                                    <span>עודכן לאחרונה: 21/11/2026</span>
                                 </div>
                             )}
                         </div>
