@@ -252,6 +252,39 @@
             stewards: '050-8655616'
         };
 
+        const SITE_CHANGELOG = [
+            {
+                version: '1.50',
+                date: '23/11/2026',
+                summary: 'נוסף כפתור "מה חדש" בחלק העליון במצב עריכה, הפותח חלון המפרט את כל השינויים והשדרוגים שבוצעו באתר.'
+            },
+            {
+                version: '1.49',
+                date: '23/11/2026',
+                summary: 'נוסף כיווץ והקטנת רזולוציה אוטומטיים לתמונות בעת העלאה כדי להבטיח שמירה והצגה תקינה בענן.'
+            },
+            {
+                version: '1.48',
+                date: '20/11/2026',
+                summary: 'תאריך התפוגה בעת יצירת מודעה חדשה מוגדר כברירת מחדל ל-10 ימים לאחר תאריך הפרסום.'
+            },
+            {
+                version: '1.46',
+                date: '20/11/2026',
+                summary: 'תיבת "חוסרים בשיבוצים" הפכה למתקפלת עם מונה חוסרים, מסגרת אדומה במצב סגור ומסגרת אדומה בהירה במצב פתוח.'
+            },
+            {
+                version: '1.40',
+                date: '19/11/2026',
+                summary: 'נוספו הצגת יום השבוע בתאריכי חוסרים, עריכת מספרי WhatsApp, כפתור ניקוי לחוסרים וסרגל עיצוב טקסט במודעות.'
+            },
+            {
+                version: '1.38',
+                date: '19/11/2026',
+                summary: 'הוגדרה הצגת מודעות רגילות בטלוויזיה ל-7 ימים מפרסומן ומודעות מוצמדות עד תפוגתן, ונוסף טיפ הסבר בטופס.'
+            }
+        ];
+
         const HEBREW_WEEKDAYS = ['יום א׳', 'יום ב׳', 'יום ג׳', 'יום ד׳', 'יום ה׳', 'יום ו׳', 'שבת'];
 
         function buildWhatsAppLink(phoneInput) {
@@ -269,13 +302,18 @@
             return `${y}-${m}-${d}`;
         }
 
-        function addDaysToIsoString(baseIsoStr, days) {
-            const [y, m, d] = (baseIsoStr || getTodayIsoString()).split('-').map(Number);
-            const dt = new Date(y, m - 1, d + days);
-            const ny = dt.getFullYear();
-            const nm = String(dt.getMonth() + 1).padStart(2, '0');
-            const nd = String(dt.getDate()).padStart(2, '0');
-            return `${ny}-${nm}-${nd}`;
+        function addDaysToIsoString(isoDateStr, days) {
+            const base = isoDateStr && /^\d{4}-\d{2}-\d{2}$/.test(isoDateStr)
+                ? (() => {
+                    const [y, m, d] = isoDateStr.split('-').map(Number);
+                    return new Date(y, m - 1, d);
+                })()
+                : new Date();
+            base.setDate(base.getDate() + days);
+            const y = base.getFullYear();
+            const m = String(base.getMonth() + 1).padStart(2, '0');
+            const d = String(base.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
         }
 
         function parseShortageDate(dateStr) {
@@ -402,6 +440,61 @@
             if (diffDays === 1) return 'פורסם אתמול';
             if (diffDays > 1) return `פורסם לפני ${diffDays} ימים`;
             return `מיועד ל-${formatShortageDateDisplay(dateStr)}`;
+        }
+
+        function compressImageFile(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onerror = () => reject(new Error('שגיאה בקריאת קובץ התמונה'));
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.onerror = () => reject(new Error('קובץ התמונה אינו תקין'));
+                    img.onload = () => {
+                        const MAX_DIM = 1200;
+                        const MAX_DATA_URL_LENGTH = 850000; // Safe margin below Firestore 1MB document limit
+                        let width = img.width;
+                        let height = img.height;
+
+                        if (width > MAX_DIM || height > MAX_DIM) {
+                            if (width >= height) {
+                                height = Math.round((height * MAX_DIM) / width);
+                                width = MAX_DIM;
+                            } else {
+                                width = Math.round((width * MAX_DIM) / height);
+                                height = MAX_DIM;
+                            }
+                        }
+
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        let quality = 0.82;
+                        let dataUrl = '';
+
+                        for (let attempt = 0; attempt < 5; attempt++) {
+                            canvas.width = width;
+                            canvas.height = height;
+                            ctx.fillStyle = '#ffffff';
+                            ctx.fillRect(0, 0, width, height);
+                            ctx.drawImage(img, 0, 0, width, height);
+                            dataUrl = canvas.toDataURL('image/jpeg', quality);
+                            if (dataUrl.length <= MAX_DATA_URL_LENGTH) {
+                                break;
+                            }
+                            quality = Math.max(0.45, quality - 0.12);
+                            width = Math.round(width * 0.8);
+                            height = Math.round(height * 0.8);
+                        }
+
+                        if (dataUrl.length > MAX_DATA_URL_LENGTH) {
+                            reject(new Error('התמונה גדולה מדי גם לאחר כיווץ. נסו לבחור תמונה קטנה יותר.'));
+                        } else {
+                            resolve(dataUrl);
+                        }
+                    };
+                    img.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            });
         }
 
         function TvNoticeSlide({ notice, cat, currentTvIndex, formatShortageDateDisplay, getRelativeDateText }) {
@@ -651,6 +744,7 @@
             });
             const [adminPassInput, setAdminPassInput] = useState('');
             const [showAdminModal, setShowAdminModal] = useState(false);
+            const [showWhatsNewModal, setShowWhatsNewModal] = useState(false);
             const [showExitConfirmModal, setShowExitConfirmModal] = useState(false);
             const [deletingNoticeId, setDeletingNoticeId] = useState(null);
             const [adminError, setAdminError] = useState('');
@@ -681,25 +775,24 @@
             const [editingNotice, setEditingNotice] = useState(null);
             const [addingShortageType, setAddingShortageType] = useState(null);
             const [newShortageDate, setNewShortageDate] = useState('');
+            const [isCompressingImage, setIsCompressingImage] = useState(false);
+            const [imageUploadError, setImageUploadError] = useState('');
 
             const contentTextareaRef = useRef(null);
             const [showLinkBuilder, setShowLinkBuilder] = useState(false);
             const [linkTextInput, setLinkTextInput] = useState('');
             const [linkUrlInput, setLinkUrlInput] = useState('');
 
-            const [formData, setFormData] = useState(() => {
-                const today = getTodayIsoString();
-                return {
-                    title: '',
-                    content: '',
-                    category: 'מנהלה',
-                    subCategory: '',
-                    pinned: false,
-                    showOnTv: true,
-                    createdAt: today,
-                    expiresAt: addDaysToIsoString(today, 10),
-                    imageUrl: ''
-                };
+            const [formData, setFormData] = useState({
+                title: '',
+                content: '',
+                category: 'מנהלה',
+                subCategory: '',
+                pinned: false,
+                showOnTv: true,
+                createdAt: new Date().toISOString().split('T')[0],
+                expiresAt: '',
+                imageUrl: ''
             });
 
             useEffect(() => {
@@ -905,6 +998,9 @@
             const syncNoticeToCloud = async (notice) => {
                 if (!window.firebaseDb) return;
                 try {
+                    if (window.firebaseAuthReady) {
+                        await window.firebaseAuthReady;
+                    }
                     const { doc, setDoc } = window.firestoreTools;
                     const noticeDocRef = doc(window.firebaseDb, 'clore_notices', notice.id);
                     await setDoc(noticeDocRef, notice);
@@ -916,6 +1012,9 @@
             const deleteNoticeFromCloud = async (id) => {
                 if (!window.firebaseDb) return;
                 try {
+                    if (window.firebaseAuthReady) {
+                        await window.firebaseAuthReady;
+                    }
                     const { doc, deleteDoc } = window.firestoreTools;
                     const noticeDocRef = doc(window.firebaseDb, 'clore_notices', id);
                     await deleteDoc(noticeDocRef);
@@ -941,6 +1040,9 @@
             const syncWhatsappToCloud = async (updatedNumbers) => {
                 if (!window.firebaseDb) return;
                 try {
+                    if (window.firebaseAuthReady) {
+                        await window.firebaseAuthReady;
+                    }
                     const { doc, setDoc } = window.firestoreTools;
                     const whatsappDocRef = doc(window.firebaseDb, 'clore_settings', 'whatsapp_numbers');
                     await setDoc(whatsappDocRef, updatedNumbers);
@@ -1022,6 +1124,8 @@
             };
 
             const handleOpenForm = (notice = null) => {
+                setImageUploadError('');
+                setIsCompressingImage(false);
                 if (notice) {
                     setEditingNotice(notice);
                     setFormData({
@@ -1036,7 +1140,7 @@
                         imageUrl: notice.imageUrl || ''
                     });
                 } else {
-                    const today = getTodayIsoString();
+                    const todayStr = getTodayIsoString();
                     setEditingNotice(null);
                     setFormData({
                         title: '',
@@ -1045,8 +1149,8 @@
                         subCategory: '',
                         pinned: false,
                         showOnTv: true,
-                        createdAt: today,
-                        expiresAt: addDaysToIsoString(today, 10),
+                        createdAt: todayStr,
+                        expiresAt: addDaysToIsoString(todayStr, 10),
                         imageUrl: ''
                     });
                 }
@@ -1159,7 +1263,7 @@
 
             const handleSaveNotice = (e) => {
                 e.preventDefault();
-                if (!formData.title.trim()) return;
+                if (!formData.title.trim() || isCompressingImage) return;
 
                 const normalizedData = {
                     ...formData,
@@ -1212,14 +1316,19 @@
                 }
             };
 
-            const handleImageUpload = (e) => {
+            const handleImageUpload = async (e) => {
                 const file = e.target.files[0];
-                if (file) {
-                    const reader = new FileReader();
-                    reader.onloadend = () => {
-                        setFormData(prev => ({ ...prev, imageUrl: reader.result }));
-                    };
-                    reader.readAsDataURL(file);
+                if (!file) return;
+                setImageUploadError('');
+                setIsCompressingImage(true);
+                try {
+                    const compressedDataUrl = await compressImageFile(file);
+                    setFormData(prev => ({ ...prev, imageUrl: compressedDataUrl }));
+                } catch (err) {
+                    console.error('Image compression error:', err);
+                    setImageUploadError(err.message || 'לא ניתן לעבד את התמונה שנבחרה.');
+                } finally {
+                    setIsCompressingImage(false);
                 }
             };
 
@@ -1293,7 +1402,7 @@
                             <div className="flex items-center gap-2 sm:gap-3 min-w-0">
                                 <div className="min-w-0">
                                     <div className="flex items-center gap-2">
-                                        <h1 className="text-sm sm:lg font-bold text-slate-900 dark:text-white whitespace-nowrap">עדכוני גן המדע</h1>
+                                        <h1 className="text-sm sm:text-lg font-bold text-slate-900 dark:text-white whitespace-nowrap">עדכוני גן המדע</h1>
                                         {isCloudConnected && (
                                             <span className="bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800" title="מחובר לענן ומסונכרן בזמן אמת">
                                                 ☁️ מחובר לענן
@@ -1315,6 +1424,14 @@
 
                                 {isAdmin ? (
                                     <div className="flex items-center gap-1.5 sm:gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowWhatsNewModal(true)}
+                                            className="bg-emerald-50 dark:bg-emerald-950/80 hover:bg-emerald-100 dark:hover:bg-emerald-900/80 text-emerald-700 dark:text-emerald-300 text-xs font-bold px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-full border border-emerald-200 dark:border-emerald-800 transition whitespace-nowrap flex items-center gap-1"
+                                        >
+                                            <span>✨</span>
+                                            <span>מה חדש</span>
+                                        </button>
                                         <span className="bg-purple-100 dark:bg-purple-950/80 text-purple-700 dark:text-purple-300 text-xs font-bold px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-full border border-purple-200 dark:border-purple-800 whitespace-nowrap">
                                             🔓 מצב מנהל
                                         </span>
@@ -1340,11 +1457,11 @@
                     {/* Main Content Area */}
                     <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
                         
-                        {/* Shift Shortages Section */}
-                        <div className={`bg-white dark:bg-slate-900 rounded-3xl shadow-sm border-2 mb-6 no-print transition-colors duration-200 overflow-hidden ${
-                            !isShortagesOpen
-                                ? 'border-red-500 dark:border-red-500'
-                                : 'border-red-200 dark:border-red-900/70'
+                        {/* Shift Shortages Section (Collapsible) */}
+                        <div className={`bg-white dark:bg-slate-900 rounded-3xl shadow-sm border-2 mb-6 no-print transition-colors overflow-hidden ${
+                            isShortagesOpen
+                                ? 'border-red-200 dark:border-red-800/70'
+                                : 'border-red-500 dark:border-red-500'
                         }`}>
                             {/* Collapsible Header Button */}
                             <button
@@ -1363,7 +1480,7 @@
                                             ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-800' 
                                             : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
                                     }`}>
-                                        {`${totalShortagesCount} חוסרים`}
+                                        {totalShortagesCount} חוסרים
                                     </span>
                                 </div>
 
@@ -1387,383 +1504,383 @@
                                 <div className="collapsible-inner">
                                     <div className="collapsible-content px-5 pb-5 sm:px-6 sm:pb-6 pt-2 border-t border-slate-100 dark:border-slate-800">
                                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                                {/* Class Visits Column */}
-                                    <div className="bg-slate-50/80 dark:bg-slate-800/60 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 shadow-sm flex flex-col justify-between">
-                                        <div>
-                                            <div className="flex items-center justify-between mb-2">
-                                                <h3 className="font-bold text-slate-800 dark:text-slate-100 text-sm flex items-center gap-2">
+                                            {/* Class Visits Column */}
+                                            <div className="bg-slate-50/80 dark:bg-slate-800/60 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 shadow-sm flex flex-col justify-between">
+                                                <div>
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <h3 className="font-bold text-slate-800 dark:text-slate-100 text-sm flex items-center gap-2">
+                                                            <span>🏫</span>
+                                                            <span>ביקורי כיתות</span>
+                                                        </h3>
+                                                        {isAdmin && (
+                                                            <div className="flex items-center gap-1.5">
+                                                                <button 
+                                                                    onClick={() => { setAddingShortageType('classVisits'); setNewShortageDate(''); }}
+                                                                    className="text-xs font-bold text-teal-700 dark:text-teal-300 hover:text-teal-900 dark:hover:text-teal-200 bg-teal-50 dark:bg-teal-950/60 hover:bg-teal-100 dark:hover:bg-teal-900/60 px-2.5 py-1 rounded-lg transition border border-teal-200 dark:border-teal-800"
+                                                                >
+                                                                    + הוסף תאריך
+                                                                </button>
+                                                                <button 
+                                                                    onClick={() => handleClearShortageDates('classVisits')}
+                                                                    className="text-xs font-bold text-rose-700 dark:text-rose-300 hover:text-rose-900 dark:hover:text-rose-200 bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 px-2.5 py-1 rounded-lg transition border border-rose-200 dark:border-rose-800"
+                                                                    title="מחק את כל החוסרים בביקורי כיתות"
+                                                                >
+                                                                    ניקוי
+                                                                </button>
+                                                            </div>
+                                                        )}
+                                                    </div>
+
+                                                    {isAdmin && addingShortageType === 'classVisits' && (
+                                                        <div className="flex items-center gap-1.5 mb-3 bg-white dark:bg-slate-900 p-2 rounded-xl border border-slate-300 dark:border-slate-700">
+                                                            <input 
+                                                                type="date" 
+                                                                min={getTodayIsoString()}
+                                                                value={newShortageDate} 
+                                                                onChange={(e) => setNewShortageDate(e.target.value)}
+                                                                onKeyDown={(e) => { if (e.key === 'Enter') handleSaveShortageDate('classVisits'); }}
+                                                                className="bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-teal-500 flex-1"
+                                                                autoFocus
+                                                            />
+                                                            <button 
+                                                                onClick={() => handleSaveShortageDate('classVisits')}
+                                                                className="bg-teal-600 text-white text-xs font-bold px-2.5 py-1 rounded-lg hover:bg-teal-700 transition"
+                                                            >
+                                                                שמור
+                                                            </button>
+                                                            <button 
+                                                                onClick={() => { setAddingShortageType(null); setNewShortageDate(''); }}
+                                                                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs px-1 font-bold"
+                                                            >
+                                                                ✕
+                                                            </button>
+                                                        </div>
+                                                    )}
+
+                                                    {getActiveSortedDates(shiftShortages.classVisits).length === 0 ? (
+                                                        <p className="text-slate-400 dark:text-slate-500 text-xs py-2">אין חוסרים מדווחים כעת</p>
+                                                    ) : (
+                                                        <div className="flex flex-wrap gap-2 py-1">
+                                                            {getActiveSortedDates(shiftShortages.classVisits).map((dateStr) => {
+                                                                const dayName = getShortageDayName(dateStr);
+                                                                return (
+                                                                    <span 
+                                                                        key={dateStr}
+                                                                        className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-bold text-xs pl-3 pr-3 py-1 rounded-xl border border-slate-200 dark:border-slate-700 inline-flex items-center gap-1.5 shadow-sm group"
+                                                                    >
+                                                                        <span className="text-teal-600 dark:text-teal-400">📅</span>
+                                                                        {dayName && (
+                                                                            <>
+                                                                                <span className="text-teal-700 dark:text-teal-300">{dayName}</span>
+                                                                                <span className="text-slate-300 dark:text-slate-600">•</span>
+                                                                            </>
+                                                                        )}
+                                                                        <span dir="ltr">{formatShortageDateDisplay(dateStr)}</span>
+                                                                        {isAdmin && (
+                                                                            <button 
+                                                                                onClick={() => handleRemoveShortageDate('classVisits', dateStr)}
+                                                                                className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 font-bold mr-1 text-sm transition"
+                                                                                title="הסר תאריך"
+                                                                            >
+                                                                                ✕
+                                                                            </button>
+                                                                        )}
+                                                                    </span>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                            {/* Independent Visitors Column */}
+                                            <div className="bg-slate-50/80 dark:bg-slate-800/60 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 shadow-sm flex flex-col justify-between">
+                                                <div>
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <h3 className="font-bold text-slate-800 dark:text-slate-100 text-sm flex items-center gap-2">
+                                                            <span>🎟️</span>
+                                                            <span>מבקר עצמאי</span>
+                                                        </h3>
+                                                        {isAdmin && (
+                                                            <div className="flex items-center gap-1.5">
+                                                                <button 
+                                                                    onClick={() => { setAddingShortageType('independentVisitors'); setNewShortageDate(''); }}
+                                                                    className="text-xs font-bold text-teal-700 dark:text-teal-300 hover:text-teal-900 dark:hover:text-teal-200 bg-teal-50 dark:bg-teal-950/60 hover:bg-teal-100 dark:hover:bg-teal-900/60 px-2.5 py-1 rounded-lg transition border border-teal-200 dark:border-teal-800"
+                                                                >
+                                                                    + הוסף תאריך
+                                                                </button>
+                                                                <button 
+                                                                    onClick={() => handleClearShortageDates('independentVisitors')}
+                                                                    className="text-xs font-bold text-rose-700 dark:text-rose-300 hover:text-rose-900 dark:hover:text-rose-200 bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 px-2.5 py-1 rounded-lg transition border border-rose-200 dark:border-rose-800"
+                                                                    title="מחק את כל החוסרים במבקר עצמאי"
+                                                                >
+                                                                    ניקוי
+                                                                </button>
+                                                            </div>
+                                                        )}
+                                                    </div>
+
+                                                    {isAdmin && addingShortageType === 'independentVisitors' && (
+                                                        <div className="flex items-center gap-1.5 mb-3 bg-white dark:bg-slate-900 p-2 rounded-xl border border-slate-300 dark:border-slate-700">
+                                                            <input 
+                                                                type="date" 
+                                                                min={getTodayIsoString()}
+                                                                value={newShortageDate} 
+                                                                onChange={(e) => setNewShortageDate(e.target.value)}
+                                                                onKeyDown={(e) => { if (e.key === 'Enter') handleSaveShortageDate('independentVisitors'); }}
+                                                                className="bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-teal-500 flex-1"
+                                                                autoFocus
+                                                            />
+                                                            <button 
+                                                                onClick={() => handleSaveShortageDate('independentVisitors')}
+                                                                className="bg-teal-600 text-white text-xs font-bold px-2.5 py-1 rounded-lg hover:bg-teal-700 transition"
+                                                            >
+                                                                שמור
+                                                            </button>
+                                                            <button 
+                                                                onClick={() => { setAddingShortageType(null); setNewShortageDate(''); }}
+                                                                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs px-1 font-bold"
+                                                            >
+                                                                ✕
+                                                            </button>
+                                                        </div>
+                                                    )}
+
+                                                    {getActiveSortedDates(shiftShortages.independentVisitors).length === 0 ? (
+                                                        <p className="text-slate-400 dark:text-slate-500 text-xs py-2">אין חוסרים מדווחים כעת</p>
+                                                    ) : (
+                                                        <div className="flex flex-wrap gap-2 py-1">
+                                                            {getActiveSortedDates(shiftShortages.independentVisitors).map((dateStr) => {
+                                                                const dayName = getShortageDayName(dateStr);
+                                                                return (
+                                                                    <span 
+                                                                        key={dateStr}
+                                                                        className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-bold text-xs pl-3 pr-3 py-1 rounded-xl border border-slate-200 dark:border-slate-700 inline-flex items-center gap-1.5 shadow-sm group"
+                                                                    >
+                                                                        <span className="text-teal-600 dark:text-teal-400">📅</span>
+                                                                        {dayName && (
+                                                                            <>
+                                                                                <span className="text-teal-700 dark:text-teal-300">{dayName}</span>
+                                                                                <span className="text-slate-300 dark:text-slate-600">•</span>
+                                                                            </>
+                                                                        )}
+                                                                        <span dir="ltr">{formatShortageDateDisplay(dateStr)}</span>
+                                                                        {isAdmin && (
+                                                                            <button 
+                                                                                onClick={() => handleRemoveShortageDate('independentVisitors', dateStr)}
+                                                                                className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 font-bold mr-1 text-sm transition"
+                                                                                title="הסר תאריך"
+                                                                            >
+                                                                                ✕
+                                                                            </button>
+                                                                        )}
+                                                                    </span>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                            {/* Stewards Column */}
+                                            <div className="bg-slate-50/80 dark:bg-slate-800/60 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 shadow-sm flex flex-col justify-between">
+                                                <div>
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <h3 className="font-bold text-slate-800 dark:text-slate-100 text-sm flex items-center gap-2">
+                                                            <span>👔</span>
+                                                            <span>דיילים</span>
+                                                        </h3>
+                                                        {isAdmin && (
+                                                            <div className="flex items-center gap-1.5">
+                                                                <button 
+                                                                    onClick={() => { setAddingShortageType('stewards'); setNewShortageDate(''); }}
+                                                                    className="text-xs font-bold text-teal-700 dark:text-teal-300 hover:text-teal-900 dark:hover:text-teal-200 bg-teal-50 dark:bg-teal-950/60 hover:bg-teal-100 dark:hover:bg-teal-900/60 px-2.5 py-1 rounded-lg transition border border-teal-200 dark:border-teal-800"
+                                                                >
+                                                                    + הוסף תאריך
+                                                                </button>
+                                                                <button 
+                                                                    onClick={() => handleClearShortageDates('stewards')}
+                                                                    className="text-xs font-bold text-rose-700 dark:text-rose-300 hover:text-rose-900 dark:hover:text-rose-200 bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 px-2.5 py-1 rounded-lg transition border border-rose-200 dark:border-rose-800"
+                                                                    title="מחק את כל החוסרים בדיילים"
+                                                                >
+                                                                    ניקוי
+                                                                </button>
+                                                            </div>
+                                                        )}
+                                                    </div>
+
+                                                    {isAdmin && addingShortageType === 'stewards' && (
+                                                        <div className="flex items-center gap-1.5 mb-3 bg-white dark:bg-slate-900 p-2 rounded-xl border border-slate-300 dark:border-slate-700">
+                                                            <input 
+                                                                type="date" 
+                                                                min={getTodayIsoString()}
+                                                                value={newShortageDate} 
+                                                                onChange={(e) => setNewShortageDate(e.target.value)}
+                                                                onKeyDown={(e) => { if (e.key === 'Enter') handleSaveShortageDate('stewards'); }}
+                                                                className="bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-teal-500 flex-1"
+                                                                autoFocus
+                                                            />
+                                                            <button 
+                                                                onClick={() => handleSaveShortageDate('stewards')}
+                                                                className="bg-teal-600 text-white text-xs font-bold px-2.5 py-1 rounded-lg hover:bg-teal-700 transition"
+                                                            >
+                                                                שמור
+                                                            </button>
+                                                            <button 
+                                                                onClick={() => { setAddingShortageType(null); setNewShortageDate(''); }}
+                                                                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs px-1 font-bold"
+                                                            >
+                                                                ✕
+                                                            </button>
+                                                        </div>
+                                                    )}
+
+                                                    {getActiveSortedDates(shiftShortages.stewards).length === 0 ? (
+                                                        <p className="text-slate-400 dark:text-slate-500 text-xs py-2">אין חוסרים מדווחים כעת</p>
+                                                    ) : (
+                                                        <div className="flex flex-wrap gap-2 py-1">
+                                                            {getActiveSortedDates(shiftShortages.stewards).map((dateStr) => {
+                                                                const dayName = getShortageDayName(dateStr);
+                                                                return (
+                                                                    <span 
+                                                                        key={dateStr}
+                                                                        className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-bold text-xs pl-3 pr-3 py-1 rounded-xl border border-slate-200 dark:border-slate-700 inline-flex items-center gap-1.5 shadow-sm group"
+                                                                    >
+                                                                        <span className="text-teal-600 dark:text-teal-400">📅</span>
+                                                                        {dayName && (
+                                                                            <>
+                                                                                <span className="text-teal-700 dark:text-teal-300">{dayName}</span>
+                                                                                <span className="text-slate-300 dark:text-slate-600">•</span>
+                                                                            </>
+                                                                        )}
+                                                                        <span dir="ltr">{formatShortageDateDisplay(dateStr)}</span>
+                                                                        {isAdmin && (
+                                                                            <button 
+                                                                                onClick={() => handleRemoveShortageDate('stewards', dateStr)}
+                                                                                className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 font-bold mr-1 text-sm transition"
+                                                                                title="הסר תאריך"
+                                                                            >
+                                                                                ✕
+                                                                            </button>
+                                                                        )}
+                                                                    </span>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="text-center pt-3 border-t border-slate-100 dark:border-slate-800">
+                                            <p className="text-xs sm:text-sm font-bold text-teal-800 dark:text-teal-300 tracking-wide mb-3">
+                                                💬 פנויים בתאריכים אלה? שלחו הודעה לתוכנית הרלוונטית
+                                            </p>
+                                            <div className="flex flex-wrap items-center justify-center gap-2.5">
+                                                <a 
+                                                    href={buildWhatsAppLink(whatsappNumbers.classVisits)} 
+                                                    target="_blank" 
+                                                    rel="noopener noreferrer"
+                                                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition shadow-sm inline-flex items-center gap-1.5"
+                                                >
                                                     <span>🏫</span>
                                                     <span>ביקורי כיתות</span>
-                                                </h3>
-                                                {isAdmin && (
-                                                    <div className="flex items-center gap-1.5">
-                                                        <button 
-                                                            onClick={() => { setAddingShortageType('classVisits'); setNewShortageDate(''); }}
-                                                            className="text-xs font-bold text-teal-700 dark:text-teal-300 hover:text-teal-900 dark:hover:text-teal-200 bg-teal-50 dark:bg-teal-950/60 hover:bg-teal-100 dark:hover:bg-teal-900/60 px-2.5 py-1 rounded-lg transition border border-teal-200 dark:border-teal-800"
-                                                        >
-                                                            + הוסף תאריך
-                                                        </button>
-                                                        <button 
-                                                            onClick={() => handleClearShortageDates('classVisits')}
-                                                            className="text-xs font-bold text-rose-700 dark:text-rose-300 hover:text-rose-900 dark:hover:text-rose-200 bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 px-2.5 py-1 rounded-lg transition border border-rose-200 dark:border-rose-800"
-                                                            title="מחק את כל החוסרים בביקורי כיתות"
-                                                        >
-                                                            ניקוי
-                                                        </button>
-                                                    </div>
-                                                )}
-                                            </div>
-
-                                            {isAdmin && addingShortageType === 'classVisits' && (
-                                                <div className="flex items-center gap-1.5 mb-3 bg-white dark:bg-slate-900 p-2 rounded-xl border border-slate-300 dark:border-slate-700">
-                                                    <input 
-                                                        type="date" 
-                                                        min={getTodayIsoString()}
-                                                        value={newShortageDate} 
-                                                        onChange={(e) => setNewShortageDate(e.target.value)}
-                                                        onKeyDown={(e) => { if (e.key === 'Enter') handleSaveShortageDate('classVisits'); }}
-                                                        className="bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-teal-500 flex-1"
-                                                        autoFocus
-                                                    />
-                                                    <button 
-                                                        onClick={() => handleSaveShortageDate('classVisits')}
-                                                        className="bg-teal-600 text-white text-xs font-bold px-2.5 py-1 rounded-lg hover:bg-teal-700 transition"
-                                                    >
-                                                        שמור
-                                                    </button>
-                                                    <button 
-                                                        onClick={() => { setAddingShortageType(null); setNewShortageDate(''); }}
-                                                        className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs px-1 font-bold"
-                                                    >
-                                                        ✕
-                                                    </button>
-                                                </div>
-                                            )}
-
-                                            {getActiveSortedDates(shiftShortages.classVisits).length === 0 ? (
-                                                <p className="text-slate-400 dark:text-slate-500 text-xs py-2">אין חוסרים מדווחים כעת</p>
-                                            ) : (
-                                                <div className="flex flex-wrap gap-2 py-1">
-                                                    {getActiveSortedDates(shiftShortages.classVisits).map((dateStr) => {
-                                                        const dayName = getShortageDayName(dateStr);
-                                                        return (
-                                                            <span 
-                                                                key={dateStr}
-                                                                className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-bold text-xs pl-3 pr-3 py-1 rounded-xl border border-slate-200 dark:border-slate-700 inline-flex items-center gap-1.5 shadow-sm group"
-                                                            >
-                                                                <span className="text-teal-600 dark:text-teal-400">📅</span>
-                                                                {dayName && (
-                                                                    <>
-                                                                        <span className="text-teal-700 dark:text-teal-300">{dayName}</span>
-                                                                        <span className="text-slate-300 dark:text-slate-600">•</span>
-                                                                    </>
-                                                                )}
-                                                                <span dir="ltr">{formatShortageDateDisplay(dateStr)}</span>
-                                                                {isAdmin && (
-                                                                    <button 
-                                                                        onClick={() => handleRemoveShortageDate('classVisits', dateStr)}
-                                                                        className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 font-bold mr-1 text-sm transition"
-                                                                        title="הסר תאריך"
-                                                                    >
-                                                                        ✕
-                                                                    </button>
-                                                                )}
-                                                            </span>
-                                                        );
-                                                    })}
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    {/* Independent Visitors Column */}
-                                    <div className="bg-slate-50/80 dark:bg-slate-800/60 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 shadow-sm flex flex-col justify-between">
-                                        <div>
-                                            <div className="flex items-center justify-between mb-2">
-                                                <h3 className="font-bold text-slate-800 dark:text-slate-100 text-sm flex items-center gap-2">
+                                                </a>
+                                                <a 
+                                                    href={buildWhatsAppLink(whatsappNumbers.independentVisitors)} 
+                                                    target="_blank" 
+                                                    rel="noopener noreferrer"
+                                                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition shadow-sm inline-flex items-center gap-1.5"
+                                                >
                                                     <span>🎟️</span>
                                                     <span>מבקר עצמאי</span>
-                                                </h3>
-                                                {isAdmin && (
-                                                    <div className="flex items-center gap-1.5">
-                                                        <button 
-                                                            onClick={() => { setAddingShortageType('independentVisitors'); setNewShortageDate(''); }}
-                                                            className="text-xs font-bold text-teal-700 dark:text-teal-300 hover:text-teal-900 dark:hover:text-teal-200 bg-teal-50 dark:bg-teal-950/60 hover:bg-teal-100 dark:hover:bg-teal-900/60 px-2.5 py-1 rounded-lg transition border border-teal-200 dark:border-teal-800"
-                                                        >
-                                                            + הוסף תאריך
-                                                        </button>
-                                                        <button 
-                                                            onClick={() => handleClearShortageDates('independentVisitors')}
-                                                            className="text-xs font-bold text-rose-700 dark:text-rose-300 hover:text-rose-900 dark:hover:text-rose-200 bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 px-2.5 py-1 rounded-lg transition border border-rose-200 dark:border-rose-800"
-                                                            title="מחק את כל החוסרים במבקר עצמאי"
-                                                        >
-                                                            ניקוי
-                                                        </button>
-                                                    </div>
-                                                )}
-                                            </div>
-
-                                            {isAdmin && addingShortageType === 'independentVisitors' && (
-                                                <div className="flex items-center gap-1.5 mb-3 bg-white dark:bg-slate-900 p-2 rounded-xl border border-slate-300 dark:border-slate-700">
-                                                    <input 
-                                                        type="date" 
-                                                        min={getTodayIsoString()}
-                                                        value={newShortageDate} 
-                                                        onChange={(e) => setNewShortageDate(e.target.value)}
-                                                        onKeyDown={(e) => { if (e.key === 'Enter') handleSaveShortageDate('independentVisitors'); }}
-                                                        className="bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-teal-500 flex-1"
-                                                        autoFocus
-                                                    />
-                                                    <button 
-                                                        onClick={() => handleSaveShortageDate('independentVisitors')}
-                                                        className="bg-teal-600 text-white text-xs font-bold px-2.5 py-1 rounded-lg hover:bg-teal-700 transition"
-                                                    >
-                                                        שמור
-                                                    </button>
-                                                    <button 
-                                                        onClick={() => { setAddingShortageType(null); setNewShortageDate(''); }}
-                                                        className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs px-1 font-bold"
-                                                    >
-                                                        ✕
-                                                    </button>
-                                                </div>
-                                            )}
-
-                                            {getActiveSortedDates(shiftShortages.independentVisitors).length === 0 ? (
-                                                <p className="text-slate-400 dark:text-slate-500 text-xs py-2">אין חוסרים מדווחים כעת</p>
-                                            ) : (
-                                                <div className="flex flex-wrap gap-2 py-1">
-                                                    {getActiveSortedDates(shiftShortages.independentVisitors).map((dateStr) => {
-                                                        const dayName = getShortageDayName(dateStr);
-                                                        return (
-                                                            <span 
-                                                                key={dateStr}
-                                                                className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-bold text-xs pl-3 pr-3 py-1 rounded-xl border border-slate-200 dark:border-slate-700 inline-flex items-center gap-1.5 shadow-sm group"
-                                                            >
-                                                                <span className="text-teal-600 dark:text-teal-400">📅</span>
-                                                                {dayName && (
-                                                                    <>
-                                                                        <span className="text-teal-700 dark:text-teal-300">{dayName}</span>
-                                                                        <span className="text-slate-300 dark:text-slate-600">•</span>
-                                                                    </>
-                                                                )}
-                                                                <span dir="ltr">{formatShortageDateDisplay(dateStr)}</span>
-                                                                {isAdmin && (
-                                                                    <button 
-                                                                        onClick={() => handleRemoveShortageDate('independentVisitors', dateStr)}
-                                                                        className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 font-bold mr-1 text-sm transition"
-                                                                        title="הסר תאריך"
-                                                                    >
-                                                                        ✕
-                                                                    </button>
-                                                                )}
-                                                            </span>
-                                                        );
-                                                    })}
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    {/* Stewards Column */}
-                                    <div className="bg-slate-50/80 dark:bg-slate-800/60 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 shadow-sm flex flex-col justify-between">
-                                        <div>
-                                            <div className="flex items-center justify-between mb-2">
-                                                <h3 className="font-bold text-slate-800 dark:text-slate-100 text-sm flex items-center gap-2">
+                                                </a>
+                                                <a 
+                                                    href={buildWhatsAppLink(whatsappNumbers.stewards)} 
+                                                    target="_blank" 
+                                                    rel="noopener noreferrer"
+                                                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition shadow-sm inline-flex items-center gap-1.5"
+                                                >
                                                     <span>👔</span>
                                                     <span>דיילים</span>
-                                                </h3>
+                                                </a>
                                                 {isAdmin && (
-                                                    <div className="flex items-center gap-1.5">
-                                                        <button 
-                                                            onClick={() => { setAddingShortageType('stewards'); setNewShortageDate(''); }}
-                                                            className="text-xs font-bold text-teal-700 dark:text-teal-300 hover:text-teal-900 dark:hover:text-teal-200 bg-teal-50 dark:bg-teal-950/60 hover:bg-teal-100 dark:hover:bg-teal-900/60 px-2.5 py-1 rounded-lg transition border border-teal-200 dark:border-teal-800"
-                                                        >
-                                                            + הוסף תאריך
-                                                        </button>
-                                                        <button 
-                                                            onClick={() => handleClearShortageDates('stewards')}
-                                                            className="text-xs font-bold text-rose-700 dark:text-rose-300 hover:text-rose-900 dark:hover:text-rose-200 bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 px-2.5 py-1 rounded-lg transition border border-rose-200 dark:border-rose-800"
-                                                            title="מחק את כל החוסרים בדיילים"
-                                                        >
-                                                            ניקוי
-                                                        </button>
-                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            if (!isEditingWhatsapp) {
+                                                                setWhatsappDraft(whatsappNumbers);
+                                                            }
+                                                            setIsEditingWhatsapp(prev => !prev);
+                                                        }}
+                                                        className="bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold px-3 py-2 rounded-xl transition border border-slate-300 dark:border-slate-700 inline-flex items-center gap-1.5"
+                                                    >
+                                                        <span>✏️</span>
+                                                        <span>עריכת מספרי WhatsApp</span>
+                                                    </button>
                                                 )}
                                             </div>
 
-                                            {isAdmin && addingShortageType === 'stewards' && (
-                                                <div className="flex items-center gap-1.5 mb-3 bg-white dark:bg-slate-900 p-2 rounded-xl border border-slate-300 dark:border-slate-700">
-                                                    <input 
-                                                        type="date" 
-                                                        min={getTodayIsoString()}
-                                                        value={newShortageDate} 
-                                                        onChange={(e) => setNewShortageDate(e.target.value)}
-                                                        onKeyDown={(e) => { if (e.key === 'Enter') handleSaveShortageDate('stewards'); }}
-                                                        className="bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-teal-500 flex-1"
-                                                        autoFocus
-                                                    />
-                                                    <button 
-                                                        onClick={() => handleSaveShortageDate('stewards')}
-                                                        className="bg-teal-600 text-white text-xs font-bold px-2.5 py-1 rounded-lg hover:bg-teal-700 transition"
-                                                    >
-                                                        שמור
-                                                    </button>
-                                                    <button 
-                                                        onClick={() => { setAddingShortageType(null); setNewShortageDate(''); }}
-                                                        className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs px-1 font-bold"
-                                                    >
-                                                        ✕
-                                                    </button>
-                                                </div>
-                                            )}
-
-                                            {getActiveSortedDates(shiftShortages.stewards).length === 0 ? (
-                                                <p className="text-slate-400 dark:text-slate-500 text-xs py-2">אין חוסרים מדווחים כעת</p>
-                                            ) : (
-                                                <div className="flex flex-wrap gap-2 py-1">
-                                                    {getActiveSortedDates(shiftShortages.stewards).map((dateStr) => {
-                                                        const dayName = getShortageDayName(dateStr);
-                                                        return (
-                                                            <span 
-                                                                key={dateStr}
-                                                                className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-bold text-xs pl-3 pr-3 py-1 rounded-xl border border-slate-200 dark:border-slate-700 inline-flex items-center gap-1.5 shadow-sm group"
-                                                            >
-                                                                <span className="text-teal-600 dark:text-teal-400">📅</span>
-                                                                {dayName && (
-                                                                    <>
-                                                                        <span className="text-teal-700 dark:text-teal-300">{dayName}</span>
-                                                                        <span className="text-slate-300 dark:text-slate-600">•</span>
-                                                                    </>
-                                                                )}
-                                                                <span dir="ltr">{formatShortageDateDisplay(dateStr)}</span>
-                                                                {isAdmin && (
-                                                                    <button 
-                                                                        onClick={() => handleRemoveShortageDate('stewards', dateStr)}
-                                                                        className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 font-bold mr-1 text-sm transition"
-                                                                        title="הסר תאריך"
-                                                                    >
-                                                                        ✕
-                                                                    </button>
-                                                                )}
-                                                            </span>
-                                                        );
-                                                    })}
+                                            {isAdmin && isEditingWhatsapp && (
+                                                <div className="mt-4 max-w-2xl mx-auto bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-2xl p-4 text-right shadow-sm">
+                                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+                                                        <div>
+                                                            <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">🏫 ביקורי כיתות:</label>
+                                                            <input
+                                                                type="tel"
+                                                                dir="ltr"
+                                                                value={whatsappDraft.classVisits}
+                                                                onChange={(e) => setWhatsappDraft(prev => ({ ...prev, classVisits: e.target.value }))}
+                                                                placeholder="050-0000000"
+                                                                className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                            />
+                                                        </div>
+                                                        <div>
+                                                            <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">🎟️ מבקר עצמאי:</label>
+                                                            <input
+                                                                type="tel"
+                                                                dir="ltr"
+                                                                value={whatsappDraft.independentVisitors}
+                                                                onChange={(e) => setWhatsappDraft(prev => ({ ...prev, independentVisitors: e.target.value }))}
+                                                                placeholder="050-0000000"
+                                                                className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                            />
+                                                        </div>
+                                                        <div>
+                                                            <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">👔 דיילים:</label>
+                                                            <input
+                                                                type="tel"
+                                                                dir="ltr"
+                                                                value={whatsappDraft.stewards}
+                                                                onChange={(e) => setWhatsappDraft(prev => ({ ...prev, stewards: e.target.value }))}
+                                                                placeholder="050-0000000"
+                                                                className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-center justify-end gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setIsEditingWhatsapp(false)}
+                                                            className="text-xs font-bold text-slate-600 dark:text-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-200/70 dark:hover:bg-slate-700 transition"
+                                                        >
+                                                            ביטול
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={handleSaveWhatsappNumbers}
+                                                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-1.5 rounded-lg transition shadow-sm"
+                                                        >
+                                                            שמור מספרים
+                                                        </button>
+                                                    </div>
                                                 </div>
                                             )}
                                         </div>
                                     </div>
-                                </div>
-
-                                <div className="text-center pt-3 border-t border-slate-100 dark:border-slate-800">
-                                    <p className="text-xs sm:text-sm font-bold text-teal-800 dark:text-teal-300 tracking-wide mb-3">
-                                        💬 פנויים בתאריכים אלה? שלחו הודעה לתוכנית הרלוונטית
-                                    </p>
-                                    <div className="flex flex-wrap items-center justify-center gap-2.5">
-                                        <a 
-                                            href={buildWhatsAppLink(whatsappNumbers.classVisits)} 
-                                            target="_blank" 
-                                            rel="noopener noreferrer"
-                                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition shadow-sm inline-flex items-center gap-1.5"
-                                        >
-                                            <span>🏫</span>
-                                            <span>ביקורי כיתות</span>
-                                        </a>
-                                        <a 
-                                            href={buildWhatsAppLink(whatsappNumbers.independentVisitors)} 
-                                            target="_blank" 
-                                            rel="noopener noreferrer"
-                                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition shadow-sm inline-flex items-center gap-1.5"
-                                        >
-                                            <span>🎟️</span>
-                                            <span>מבקר עצמאי</span>
-                                        </a>
-                                        <a 
-                                            href={buildWhatsAppLink(whatsappNumbers.stewards)} 
-                                            target="_blank" 
-                                            rel="noopener noreferrer"
-                                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition shadow-sm inline-flex items-center gap-1.5"
-                                        >
-                                            <span>👔</span>
-                                            <span>דיילים</span>
-                                        </a>
-                                        {isAdmin && (
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    if (!isEditingWhatsapp) {
-                                                        setWhatsappDraft(whatsappNumbers);
-                                                    }
-                                                    setIsEditingWhatsapp(prev => !prev);
-                                                }}
-                                                className="bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold px-3 py-2 rounded-xl transition border border-slate-300 dark:border-slate-700 inline-flex items-center gap-1.5"
-                                            >
-                                                <span>✏️</span>
-                                                <span>עריכת מספרי WhatsApp</span>
-                                            </button>
-                                        )}
-                                    </div>
-
-                                    {isAdmin && isEditingWhatsapp && (
-                                        <div className="mt-4 max-w-2xl mx-auto bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-2xl p-4 text-right shadow-sm">
-                                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
-                                                <div>
-                                                    <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">🏫 ביקורי כיתות:</label>
-                                                    <input
-                                                        type="tel"
-                                                        dir="ltr"
-                                                        value={whatsappDraft.classVisits}
-                                                        onChange={(e) => setWhatsappDraft(prev => ({ ...prev, classVisits: e.target.value }))}
-                                                        placeholder="050-0000000"
-                                                        className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">🎟️ מבקר עצמאי:</label>
-                                                    <input
-                                                        type="tel"
-                                                        dir="ltr"
-                                                        value={whatsappDraft.independentVisitors}
-                                                        onChange={(e) => setWhatsappDraft(prev => ({ ...prev, independentVisitors: e.target.value }))}
-                                                        placeholder="050-0000000"
-                                                        className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">👔 דיילים:</label>
-                                                    <input
-                                                        type="tel"
-                                                        dir="ltr"
-                                                        value={whatsappDraft.stewards}
-                                                        onChange={(e) => setWhatsappDraft(prev => ({ ...prev, stewards: e.target.value }))}
-                                                        placeholder="050-0000000"
-                                                        className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                                                    />
-                                                </div>
-                                            </div>
-                                            <div className="flex items-center justify-end gap-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setIsEditingWhatsapp(false)}
-                                                    className="text-xs font-bold text-slate-600 dark:text-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-200/70 dark:hover:bg-slate-700 transition"
-                                                >
-                                                    ביטול
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={handleSaveWhatsappNumbers}
-                                                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-1.5 rounded-lg transition shadow-sm"
-                                                >
-                                                    שמור מספרים
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
                                 </div>
                             </div>
                         </div>
-                    </div>
-                </div>
 
                         {/* View Navigation Tabs Bar */}
                         <div className="flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-slate-900 p-2 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-6 no-print transition-colors">
@@ -1969,7 +2086,7 @@
                                                         <HighlightText text={notice.title} query={searchQuery} />
                                                     </h3>
 
-                                                    {/* Notice Content (Optional) */}
+                                                    {/* Notice Content */}
                                                     {notice.content && notice.content.trim() && (
                                                         <RichTextDisplay
                                                             text={notice.content}
@@ -1978,7 +2095,7 @@
                                                         />
                                                     )}
 
-                                                    {/* Notice Image (Optional) */}
+                                                    {/* Notice Image */}
                                                     {notice.imageUrl && (
                                                         <div className="mt-1">
                                                             <img
@@ -2139,9 +2256,9 @@
                             </button>
                             {isAdmin && (
                                 <div className="text-xs text-slate-500 dark:text-slate-400 font-medium flex items-center gap-2 bg-slate-100 dark:bg-slate-800 px-3.5 py-1 rounded-full border border-slate-200 dark:border-slate-700">
-                                    <span>גרסה 1.48</span>
+                                    <span>גרסה 1.50</span>
                                     <span>•</span>
-                                    <span>עודכן לאחרונה: 22/11/2026</span>
+                                    <span>עודכן לאחרונה: 23/11/2026</span>
                                 </div>
                             )}
                         </div>
@@ -2288,6 +2405,76 @@
                         </div>
                     )}
 
+                    {/* Modal: What's New (Site Changelog) */}
+                    {showWhatsNewModal && (
+                        <div 
+                            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+                            onClick={() => setShowWhatsNewModal(false)}
+                        >
+                            <div 
+                                className="bg-white dark:bg-slate-900 rounded-2xl max-w-xl w-full p-6 shadow-2xl border border-slate-100 dark:border-slate-800 max-h-[85vh] flex flex-col"
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
+                                    <div>
+                                        <h3 className="text-lg font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
+                                            <span>✨</span>
+                                            <span>מה חדש באתר</span>
+                                        </h3>
+                                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                                            תיעוד השינויים והשדרוגים שבוצעו במערכת
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowWhatsNewModal(false)}
+                                        className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-sm font-bold p-1"
+                                        aria-label="סגירה"
+                                    >
+                                        ✕
+                                    </button>
+                                </div>
+
+                                <div className="overflow-y-auto space-y-2.5 pl-1 flex-1">
+                                    {SITE_CHANGELOG.map((item, idx) => (
+                                        <div
+                                            key={`${item.version}-${idx}`}
+                                            className={`p-3.5 rounded-xl border flex items-start gap-3 transition-colors ${
+                                                idx === 0
+                                                    ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800/80'
+                                                    : 'bg-slate-50/80 dark:bg-slate-800/60 border-slate-200/80 dark:border-slate-700/80'
+                                            }`}
+                                        >
+                                            <span
+                                                dir="ltr"
+                                                className={`shrink-0 text-xs font-mono font-bold px-2.5 py-1 rounded-lg border ${
+                                                    idx === 0
+                                                        ? 'bg-emerald-600 text-white border-emerald-600'
+                                                        : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                                                }`}
+                                            >
+                                                {item.date}
+                                            </span>
+                                            <p className="text-xs sm:text-sm text-slate-800 dark:text-slate-100 font-medium leading-relaxed pt-0.5">
+                                                {item.summary}
+                                            </p>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="pt-4 mt-4 border-t border-slate-100 dark:border-slate-800 flex justify-end shrink-0">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowWhatsNewModal(false)}
+                                        className="bg-slate-800 dark:bg-slate-700 hover:bg-slate-900 dark:hover:bg-slate-600 text-white text-xs font-bold px-5 py-2 rounded-xl transition shadow-sm"
+                                    >
+                                        סגירה
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {/* Modal: Exit Edit Mode Confirmation */}
                     {showExitConfirmModal && (
                         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -2328,7 +2515,7 @@
                                     🗑️
                                 </div>
                                 <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">אישור מחיקת מודעה</h3>
-                                <p className="text-sm text-slate-600 dark:text-slate-300 mb-6">פעולה זו אינה ניתנת לביטול. נא להעביר לארכיון את כל המודעות, אלה אם מודעה פורסמה בטעות.</p>
+                                <p className="text-sm text-slate-600 dark:text-slate-300 mb-6">האם למחוק מודעה זו לחלוטין? פעולה זו אינה ניתנת לביטול.</p>
                                 <div className="flex items-center justify-center gap-3">
                                     <button 
                                         type="button"
@@ -2538,10 +2725,13 @@
                                     <div>
                                         <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">תמונה (קישור URL או העלאה):</label>
                                         <input 
-                                            type="url"
+                                            type="text"
                                             placeholder="https://..."
                                             value={formData.imageUrl}
-                                            onChange={(e) => setFormData(prev => ({ ...prev, imageUrl: e.target.value }))}
+                                            onChange={(e) => {
+                                                setImageUploadError('');
+                                                setFormData(prev => ({ ...prev, imageUrl: e.target.value }));
+                                            }}
                                             className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 mb-2"
                                         />
                                         <input 
@@ -2550,6 +2740,12 @@
                                             onChange={handleImageUpload}
                                             className="block w-full text-xs text-slate-500 dark:text-slate-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-purple-50 dark:file:bg-purple-950 file:text-purple-700 dark:file:text-purple-300 hover:file:bg-purple-100"
                                         />
+                                        {isCompressingImage && (
+                                            <p className="text-[11px] text-purple-600 dark:text-purple-400 mt-1 font-bold">⏳ מכווץ ומכין את התמונה לשמירה בענן...</p>
+                                        )}
+                                        {imageUploadError && (
+                                            <p className="text-[11px] text-rose-600 dark:text-rose-400 mt-1 font-bold">{imageUploadError}</p>
+                                        )}
                                     </div>
 
                                     <div className="flex flex-col gap-2 pt-2">
@@ -2589,7 +2785,8 @@
                                         </button>
                                         <button 
                                             type="submit"
-                                            className="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs px-5 py-2 rounded-xl shadow-sm"
+                                            disabled={isCompressingImage}
+                                            className="bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-bold text-xs px-5 py-2 rounded-xl shadow-sm"
                                         >
                                             {editingNotice ? 'עדכן מודעה' : 'פרסם מודעה'}
                                         </button>
