@@ -16,6 +16,14 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <!-- Babel standalone for JSX -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- PDF.js & jsPDF for automatic client-side PDF compression -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" crossorigin></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" crossorigin></script>
+    <script>
+        if (window.pdfjsLib) {
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        }
+    </script>
     
     <!-- Firebase SDK Modular Imports -->
     <script type="module">
@@ -253,6 +261,11 @@
         };
 
         const SITE_CHANGELOG = [
+            {
+                version: '1.51',
+                date: '23/11/2026',
+                summary: 'נוספה אפשרות לצרף קבצים למודעות (קישור או העלאה מהמחשב) עם דחיסה אוטומטית לגודל המתאים לשמירה בענן.'
+            },
             {
                 version: '1.50',
                 date: '23/11/2026',
@@ -497,6 +510,152 @@
             });
         }
 
+        function formatFileSize(bytes) {
+            if (!bytes || bytes <= 0) return '';
+            if (bytes < 1024) return `${bytes} B`;
+            if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+            return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+        }
+
+        function getAttachmentIcon(fileName = '', fileUrl = '') {
+            const target = `${fileName} ${fileUrl}`.toLowerCase();
+            if (target.includes('.pdf') || target.startsWith('data:application/pdf')) return '📄';
+            if (target.includes('.xls') || target.includes('.csv')) return '📊';
+            if (target.includes('.doc') || target.includes('.txt')) return '📝';
+            if (target.includes('.ppt')) return '📽️';
+            if (target.includes('.zip') || target.includes('.rar') || target.endsWith('.gz')) return '🗜️';
+            return '📎';
+        }
+
+        function readFileAsDataUrl(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onerror = () => reject(new Error('שגיאה בקריאת הקובץ'));
+                reader.onload = () => resolve(reader.result);
+                reader.readAsDataURL(file);
+            });
+        }
+
+        async function compressPdfFile(file, maxDataUrlLength) {
+            if (!window.pdfjsLib || !window.jspdf || !window.jspdf.jsPDF) {
+                throw new Error('רכיבי דחיסת PDF עדיין נטענים. נסו שוב בעוד מספר שניות.');
+            }
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            const numPages = pdf.numPages;
+
+            let scale = numPages > 8 ? 0.9 : numPages > 4 ? 1.15 : 1.4;
+            let quality = 0.78;
+            let bestDataUrl = '';
+
+            for (let attempt = 0; attempt < 6; attempt++) {
+                let pdfDoc = null;
+                for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+                    const page = await pdf.getPage(pageNum);
+                    const baseViewport = page.getViewport({ scale: 1 });
+                    const viewport = page.getViewport({ scale });
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = Math.max(1, Math.floor(viewport.width));
+                    canvas.height = Math.max(1, Math.floor(viewport.height));
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                    await page.render({ canvasContext: ctx, viewport }).promise;
+                    const imgData = canvas.toDataURL('image/jpeg', quality);
+
+                    const orientation = baseViewport.width >= baseViewport.height ? 'l' : 'p';
+                    if (pageNum === 1) {
+                        pdfDoc = new window.jspdf.jsPDF({
+                            orientation,
+                            unit: 'pt',
+                            format: [baseViewport.width, baseViewport.height],
+                            compress: true
+                        });
+                    } else {
+                        pdfDoc.addPage([baseViewport.width, baseViewport.height], orientation);
+                    }
+                    pdfDoc.addImage(imgData, 'JPEG', 0, 0, baseViewport.width, baseViewport.height, undefined, 'FAST');
+                }
+
+                bestDataUrl = pdfDoc.output('datauristring');
+                if (bestDataUrl.length <= maxDataUrlLength) {
+                    return bestDataUrl;
+                }
+
+                scale = Math.max(0.42, scale * 0.76);
+                quality = Math.max(0.35, quality - 0.13);
+            }
+
+            throw new Error('קובץ ה-PDF גדול מדי גם לאחר דחיסה אוטומטית. מומלץ לחלק אותו או לצרף קישור מ-Google Drive.');
+        }
+
+        async function compressFileAttachment(file, maxDataUrlLength = 820000) {
+            const safeMax = Math.max(250000, maxDataUrlLength);
+            const estimatedDataUrlLen = Math.ceil(file.size * 1.38) + 64;
+
+            // If file already fits comfortably within the cloud document limit, keep original quality untouched
+            if (estimatedDataUrlLen <= safeMax) {
+                const directDataUrl = await readFileAsDataUrl(file);
+                if (directDataUrl.length <= safeMax) {
+                    return {
+                        fileUrl: directDataUrl,
+                        fileName: file.name,
+                        compressed: false,
+                        originalSize: file.size,
+                        finalSize: file.size
+                    };
+                }
+            }
+
+            const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+            if (isPdf) {
+                const compressedPdfUrl = await compressPdfFile(file, safeMax);
+                const approxBytes = Math.round((compressedPdfUrl.length * 3) / 4);
+                return {
+                    fileUrl: compressedPdfUrl,
+                    fileName: file.name,
+                    compressed: true,
+                    originalSize: file.size,
+                    finalSize: approxBytes
+                };
+            }
+
+            if (file.type && file.type.startsWith('image/')) {
+                const compressedImgUrl = await compressImageFile(file);
+                if (compressedImgUrl.length > safeMax) {
+                    throw new Error('הקובץ גדול מדי לשמירה יחד עם התמונה הקיימת במודעה.');
+                }
+                const approxBytes = Math.round((compressedImgUrl.length * 3) / 4);
+                return {
+                    fileUrl: compressedImgUrl,
+                    fileName: file.name,
+                    compressed: true,
+                    originalSize: file.size,
+                    finalSize: approxBytes
+                };
+            }
+
+            // Try browser-native GZIP compression for other documents/text files
+            if (typeof CompressionStream !== 'undefined') {
+                const compressedStream = file.stream().pipeThrough(new CompressionStream('gzip'));
+                const gzBlob = await new Response(compressedStream).blob();
+                const gzDataUrl = await readFileAsDataUrl(gzBlob);
+                if (gzDataUrl.length <= safeMax) {
+                    return {
+                        fileUrl: gzDataUrl,
+                        fileName: `${file.name}.gz`,
+                        compressed: true,
+                        originalSize: file.size,
+                        finalSize: gzBlob.size
+                    };
+                }
+            }
+
+            throw new Error('הקובץ גדול מדי לשמירה ישירה בענן גם לאחר ניסיון דחיסה. מומלץ לשמור כ-PDF (שנדחס אוטומטית) או להדביק קישור.');
+        }
+
         function TvNoticeSlide({ notice, cat, currentTvIndex, formatShortageDateDisplay, getRelativeDateText }) {
             const textColRef = useRef(null);
             const titleRef = useRef(null);
@@ -575,7 +734,7 @@
                     gap: Math.max(8, Math.round(best * 0.45)),
                     needsScroll: stillOverflows
                 });
-            }, [notice.id, notice.title, notice.content, notice.imageUrl, currentTvIndex, resizeTick]);
+            }, [notice.id, notice.title, notice.content, notice.imageUrl, notice.fileUrl, notice.fileName, currentTvIndex, resizeTick]);
 
             return (
                 <div 
@@ -622,6 +781,15 @@
                                     text={notice.content}
                                     className="text-slate-800 font-medium"
                                 />
+                            </div>
+                        )}
+
+                        {notice.fileUrl && (
+                            <div className="shrink-0">
+                                <span className="inline-flex items-center gap-2 bg-emerald-50 text-emerald-800 border border-emerald-200 px-4 py-1.5 rounded-xl text-base sm:text-lg font-bold">
+                                    <span>{getAttachmentIcon(notice.fileName, notice.fileUrl)}</span>
+                                    <span>מצורף קובץ: {notice.fileName || 'מסמך מצורף'} (זמין להורדה בלוח)</span>
+                                </span>
                             </div>
                         )}
 
@@ -777,6 +945,9 @@
             const [newShortageDate, setNewShortageDate] = useState('');
             const [isCompressingImage, setIsCompressingImage] = useState(false);
             const [imageUploadError, setImageUploadError] = useState('');
+            const [isCompressingFile, setIsCompressingFile] = useState(false);
+            const [fileUploadError, setFileUploadError] = useState('');
+            const [fileCompressionInfo, setFileCompressionInfo] = useState('');
 
             const contentTextareaRef = useRef(null);
             const [showLinkBuilder, setShowLinkBuilder] = useState(false);
@@ -792,7 +963,9 @@
                 showOnTv: true,
                 createdAt: new Date().toISOString().split('T')[0],
                 expiresAt: '',
-                imageUrl: ''
+                imageUrl: '',
+                fileUrl: '',
+                fileName: ''
             });
 
             useEffect(() => {
@@ -1126,6 +1299,9 @@
             const handleOpenForm = (notice = null) => {
                 setImageUploadError('');
                 setIsCompressingImage(false);
+                setFileUploadError('');
+                setIsCompressingFile(false);
+                setFileCompressionInfo('');
                 if (notice) {
                     setEditingNotice(notice);
                     setFormData({
@@ -1137,7 +1313,9 @@
                         showOnTv: notice.showOnTv !== false,
                         createdAt: notice.createdAt || getTodayIsoString(),
                         expiresAt: notice.expiresAt || '',
-                        imageUrl: notice.imageUrl || ''
+                        imageUrl: notice.imageUrl || '',
+                        fileUrl: notice.fileUrl || '',
+                        fileName: notice.fileName || ''
                     });
                 } else {
                     const todayStr = getTodayIsoString();
@@ -1151,7 +1329,9 @@
                         showOnTv: true,
                         createdAt: todayStr,
                         expiresAt: addDaysToIsoString(todayStr, 10),
-                        imageUrl: ''
+                        imageUrl: '',
+                        fileUrl: '',
+                        fileName: ''
                     });
                 }
                 setShowLinkBuilder(false);
@@ -1263,11 +1443,12 @@
 
             const handleSaveNotice = (e) => {
                 e.preventDefault();
-                if (!formData.title.trim() || isCompressingImage) return;
+                if (!formData.title.trim() || isCompressingImage || isCompressingFile) return;
 
                 const normalizedData = {
                     ...formData,
-                    subCategory: formData.category === 'מתחמי הגן' ? (formData.subCategory || '') : ''
+                    subCategory: formData.category === 'מתחמי הגן' ? (formData.subCategory || '') : '',
+                    fileName: formData.fileUrl ? (formData.fileName.trim() || 'קובץ מצורף') : ''
                 };
 
                 if (editingNotice) {
@@ -1329,6 +1510,39 @@
                     setImageUploadError(err.message || 'לא ניתן לעבד את התמונה שנבחרה.');
                 } finally {
                     setIsCompressingImage(false);
+                }
+            };
+
+            const handleFileUpload = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                setFileUploadError('');
+                setFileCompressionInfo('');
+                setIsCompressingFile(true);
+                try {
+                    const existingImageBytes = formData.imageUrl && formData.imageUrl.startsWith('data:')
+                        ? formData.imageUrl.length
+                        : 0;
+                    const availableBudget = Math.min(820000, Math.max(260000, 920000 - existingImageBytes));
+                    const result = await compressFileAttachment(file, availableBudget);
+                    setFormData(prev => ({
+                        ...prev,
+                        fileUrl: result.fileUrl,
+                        fileName: prev.fileName.trim() ? prev.fileName : result.fileName
+                    }));
+                    if (result.compressed) {
+                        setFileCompressionInfo(
+                            `✓ הקובץ נדחס אוטומטית (${formatFileSize(result.originalSize)} ➔ ${formatFileSize(result.finalSize)})`
+                        );
+                    } else {
+                        setFileCompressionInfo(`✓ הקובץ מוכן לשמירה (${formatFileSize(result.finalSize)})`);
+                    }
+                } catch (err) {
+                    console.error('File compression error:', err);
+                    setFileUploadError(err.message || 'לא ניתן לעבד את הקובץ שנבחר.');
+                } finally {
+                    setIsCompressingFile(false);
+                    e.target.value = '';
                 }
             };
 
@@ -2107,6 +2321,27 @@
                                                         </div>
                                                     )}
 
+                                                    {/* Notice File Attachment */}
+                                                    {notice.fileUrl && (
+                                                        <div className="mt-1">
+                                                            <a
+                                                                href={notice.fileUrl}
+                                                                download={notice.fileUrl.startsWith('data:') ? (notice.fileName || 'קובץ_מצורף') : undefined}
+                                                                target={notice.fileUrl.startsWith('data:') ? undefined : '_blank'}
+                                                                rel={notice.fileUrl.startsWith('data:') ? undefined : 'noopener noreferrer'}
+                                                                className="inline-flex items-center justify-between gap-2.5 w-full bg-slate-50 dark:bg-slate-800/80 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-slate-800 dark:text-slate-100 hover:text-emerald-800 dark:hover:text-emerald-300 border border-slate-200 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-700 rounded-xl px-3.5 py-2.5 text-xs font-bold transition group"
+                                                            >
+                                                                <span className="flex items-center gap-2 min-w-0">
+                                                                    <span className="text-base shrink-0">{getAttachmentIcon(notice.fileName, notice.fileUrl)}</span>
+                                                                    <span className="truncate">{notice.fileName || 'קובץ מצורף'}</span>
+                                                                </span>
+                                                                <span className="text-emerald-600 dark:text-emerald-400 shrink-0 text-[11px] font-extrabold">
+                                                                    {notice.fileUrl.startsWith('data:') ? '⬇️ הורדה' : '↗ פתיחה'}
+                                                                </span>
+                                                            </a>
+                                                        </div>
+                                                    )}
+
                                                     {/* Footer Metadata */}
                                                     <div className="pt-3 mt-1 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
                                                         <span>
@@ -2218,6 +2453,18 @@
                                                                 className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed"
                                                             />
                                                         )}
+                                                        {notice.fileUrl && (
+                                                            <a
+                                                                href={notice.fileUrl}
+                                                                download={notice.fileUrl.startsWith('data:') ? (notice.fileName || 'קובץ_מצורף') : undefined}
+                                                                target={notice.fileUrl.startsWith('data:') ? undefined : '_blank'}
+                                                                rel={notice.fileUrl.startsWith('data:') ? undefined : 'noopener noreferrer'}
+                                                                className="inline-flex items-center gap-2 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-bold hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition"
+                                                            >
+                                                                <span>{getAttachmentIcon(notice.fileName, notice.fileUrl)}</span>
+                                                                <span className="truncate">{notice.fileName || 'קובץ מצורף'}</span>
+                                                            </a>
+                                                        )}
                                                         <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2">
                                                             <button
                                                                 type="button"
@@ -2256,7 +2503,7 @@
                             </button>
                             {isAdmin && (
                                 <div className="text-xs text-slate-500 dark:text-slate-400 font-medium flex items-center gap-2 bg-slate-100 dark:bg-slate-800 px-3.5 py-1 rounded-full border border-slate-200 dark:border-slate-700">
-                                    <span>גרסה 1.50</span>
+                                    <span>גרסה 1.51</span>
                                     <span>•</span>
                                     <span>עודכן לאחרונה: 23/11/2026</span>
                                 </div>
@@ -2405,68 +2652,54 @@
                         </div>
                     )}
 
-                    {/* Modal: What's New (Site Changelog) */}
+                    {/* Modal: What's New / Site Changelog */}
                     {showWhatsNewModal && (
-                        <div 
-                            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
-                            onClick={() => setShowWhatsNewModal(false)}
-                        >
-                            <div 
-                                className="bg-white dark:bg-slate-900 rounded-2xl max-w-xl w-full p-6 shadow-2xl border border-slate-100 dark:border-slate-800 max-h-[85vh] flex flex-col"
-                                onClick={(e) => e.stopPropagation()}
-                            >
-                                <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
-                                    <div>
-                                        <h3 className="text-lg font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
-                                            <span>✨</span>
-                                            <span>מה חדש באתר</span>
-                                        </h3>
-                                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                                            תיעוד השינויים והשדרוגים שבוצעו במערכת
-                                        </p>
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                            <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 dark:border-slate-800 flex flex-col max-h-[85vh]">
+                                <div className="flex justify-between items-center mb-4 pb-3 border-b border-slate-100 dark:border-slate-800 shrink-0">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xl">✨</span>
+                                        <h3 className="text-lg font-extrabold text-slate-900 dark:text-white">מה חדש באתר</h3>
                                     </div>
-                                    <button
+                                    <button 
                                         type="button"
                                         onClick={() => setShowWhatsNewModal(false)}
-                                        className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-sm font-bold p-1"
-                                        aria-label="סגירה"
+                                        className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-sm font-bold px-1.5"
                                     >
                                         ✕
                                     </button>
                                 </div>
 
-                                <div className="overflow-y-auto space-y-2.5 pl-1 flex-1">
+                                <div className="space-y-3 overflow-y-auto pl-1 flex-1">
                                     {SITE_CHANGELOG.map((item, idx) => (
                                         <div
-                                            key={`${item.version}-${idx}`}
-                                            className={`p-3.5 rounded-xl border flex items-start gap-3 transition-colors ${
+                                            key={item.version}
+                                            className={`p-3.5 rounded-xl border transition ${
                                                 idx === 0
                                                     ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800/80'
                                                     : 'bg-slate-50/80 dark:bg-slate-800/60 border-slate-200/80 dark:border-slate-700/80'
                                             }`}
                                         >
-                                            <span
-                                                dir="ltr"
-                                                className={`shrink-0 text-xs font-mono font-bold px-2.5 py-1 rounded-lg border ${
-                                                    idx === 0
-                                                        ? 'bg-emerald-600 text-white border-emerald-600'
-                                                        : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
-                                                }`}
-                                            >
-                                                {item.date}
-                                            </span>
-                                            <p className="text-xs sm:text-sm text-slate-800 dark:text-slate-100 font-medium leading-relaxed pt-0.5">
+                                            <div className="flex items-center justify-between gap-2 mb-1">
+                                                <span dir="ltr" className="text-xs font-extrabold text-emerald-700 dark:text-emerald-300">
+                                                    {item.date}
+                                                </span>
+                                                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 bg-white dark:bg-slate-900 px-2 py-0.5 rounded-full border border-slate-200 dark:border-slate-700">
+                                                    גרסה {item.version}
+                                                </span>
+                                            </div>
+                                            <p className="text-xs sm:text-sm text-slate-800 dark:text-slate-200 leading-relaxed font-medium">
                                                 {item.summary}
                                             </p>
                                         </div>
                                     ))}
                                 </div>
 
-                                <div className="pt-4 mt-4 border-t border-slate-100 dark:border-slate-800 flex justify-end shrink-0">
+                                <div className="flex items-center justify-end pt-4 mt-4 border-t border-slate-100 dark:border-slate-800 shrink-0">
                                     <button
                                         type="button"
                                         onClick={() => setShowWhatsNewModal(false)}
-                                        className="bg-slate-800 dark:bg-slate-700 hover:bg-slate-900 dark:hover:bg-slate-600 text-white text-xs font-bold px-5 py-2 rounded-xl transition shadow-sm"
+                                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-5 py-2 rounded-xl shadow-sm transition"
                                     >
                                         סגירה
                                     </button>
@@ -2545,6 +2778,7 @@
                                         {editingNotice ? 'עריכת מודעה' : 'הוספת מודעה חדשה'}
                                     </h3>
                                     <button 
+                                        type="button"
                                         onClick={() => setShowFormModal(false)}
                                         className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-sm font-bold"
                                     >
@@ -2698,13 +2932,15 @@
                                                 type="date"
                                                 value={formData.createdAt}
                                                 onChange={(e) => {
-                                                    const newCreatedAt = e.target.value;
+                                                    const nextCreatedAt = e.target.value;
                                                     setFormData(prev => {
-                                                        const shouldSyncExpiry = !editingNotice && newCreatedAt && prev.expiresAt === addDaysToIsoString(prev.createdAt, 10);
+                                                        const wasDefaultTenDays = !editingNotice && prev.expiresAt === addDaysToIsoString(prev.createdAt, 10);
                                                         return {
                                                             ...prev,
-                                                            createdAt: newCreatedAt,
-                                                            expiresAt: shouldSyncExpiry ? addDaysToIsoString(newCreatedAt, 10) : prev.expiresAt
+                                                            createdAt: nextCreatedAt,
+                                                            expiresAt: wasDefaultTenDays && nextCreatedAt
+                                                                ? addDaysToIsoString(nextCreatedAt, 10)
+                                                                : prev.expiresAt
                                                         };
                                                     });
                                                 }}
@@ -2723,7 +2959,21 @@
                                     </div>
 
                                     <div>
-                                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">תמונה (קישור URL או העלאה):</label>
+                                        <div className="flex items-center justify-between mb-1">
+                                            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">תמונה (קישור URL או העלאה):</label>
+                                            {formData.imageUrl && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setImageUploadError('');
+                                                        setFormData(prev => ({ ...prev, imageUrl: '' }));
+                                                    }}
+                                                    className="text-[11px] font-bold text-rose-600 dark:text-rose-400 hover:underline"
+                                                >
+                                                    ✕ הסר תמונה
+                                                </button>
+                                            )}
+                                        </div>
                                         <input 
                                             type="text"
                                             placeholder="https://..."
@@ -2745,6 +2995,63 @@
                                         )}
                                         {imageUploadError && (
                                             <p className="text-[11px] text-rose-600 dark:text-rose-400 mt-1 font-bold">{imageUploadError}</p>
+                                        )}
+                                    </div>
+
+                                    <div>
+                                        <div className="flex items-center justify-between mb-1">
+                                            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">קובץ מצורף (קישור URL או העלאה):</label>
+                                            {formData.fileUrl && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setFileUploadError('');
+                                                        setFileCompressionInfo('');
+                                                        setFormData(prev => ({ ...prev, fileUrl: '', fileName: '' }));
+                                                    }}
+                                                    className="text-[11px] font-bold text-rose-600 dark:text-rose-400 hover:underline"
+                                                >
+                                                    ✕ הסר קובץ
+                                                </button>
+                                            )}
+                                        </div>
+                                        <input 
+                                            type="text"
+                                            placeholder="https://... (קישור לקובץ או Google Drive)"
+                                            value={formData.fileUrl.startsWith('data:') ? '' : formData.fileUrl}
+                                            onChange={(e) => {
+                                                setFileUploadError('');
+                                                setFileCompressionInfo('');
+                                                setFormData(prev => ({ ...prev, fileUrl: e.target.value }));
+                                            }}
+                                            className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 mb-2"
+                                        />
+                                        {formData.fileUrl && (
+                                            <input
+                                                type="text"
+                                                placeholder="שם הקובץ להצגה על הכרטיס..."
+                                                value={formData.fileName}
+                                                onChange={(e) => setFormData(prev => ({ ...prev, fileName: e.target.value }))}
+                                                className="w-full bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl px-3 py-1.5 text-xs mb-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                            />
+                                        )}
+                                        <input 
+                                            type="file" 
+                                            accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,application/pdf"
+                                            onChange={handleFileUpload}
+                                            className="block w-full text-xs text-slate-500 dark:text-slate-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-emerald-50 dark:file:bg-emerald-950 file:text-emerald-700 dark:file:text-emerald-300 hover:file:bg-emerald-100"
+                                        />
+                                        <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 font-medium">
+                                            💡 <strong>טיפ:</strong> קבצים גדולים (כגון PDF ומסמכים) נדחסים אוטומטית לגודל המתאים לשמירה בענן.
+                                        </p>
+                                        {isCompressingFile && (
+                                            <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 font-bold">⏳ דוחס ומכין את הקובץ לשמירה בענן...</p>
+                                        )}
+                                        {fileCompressionInfo && !isCompressingFile && (
+                                            <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 font-bold">{fileCompressionInfo}</p>
+                                        )}
+                                        {fileUploadError && (
+                                            <p className="text-[11px] text-rose-600 dark:text-rose-400 mt-1 font-bold">{fileUploadError}</p>
                                         )}
                                     </div>
 
@@ -2785,7 +3092,7 @@
                                         </button>
                                         <button 
                                             type="submit"
-                                            disabled={isCompressingImage}
+                                            disabled={isCompressingImage || isCompressingFile}
                                             className="bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-bold text-xs px-5 py-2 rounded-xl shadow-sm"
                                         >
                                             {editingNotice ? 'עדכן מודעה' : 'פרסם מודעה'}
